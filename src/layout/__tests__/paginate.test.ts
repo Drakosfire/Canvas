@@ -2,6 +2,8 @@ import { describe, it, expect } from '@jest/globals';
 import type { CanvasLayoutEntry, LayoutPlan } from '../types';
 import type { ComponentInstance } from '../../types/canvas.types';
 import type { RegionListContent } from '../../types/canvas.types';
+import type { CanvasAdapters } from '../../types/adapters.types';
+import { createDefaultAdapters } from '../../types/adapters.types';
 import { paginate } from '../paginate';
 
 // Generic mock item type for testing
@@ -55,12 +57,19 @@ const runPaginate = (entries: CanvasLayoutEntry[], columnCount = 1, regionHeight
         buckets.get(key)!.push(entry);
     });
 
+    // Create mock adapters for testing
+    const mockAdapters: CanvasAdapters = createDefaultAdapters({
+        defaultItemHeight: 50,
+        defaultComponentHeight: 200,
+    });
+
     return paginate({
         buckets,
         columnCount,
         regionHeightPx,
         requestedPageCount,
         measurements: new Map(),
+        adapters: mockAdapters,
     });
 };
 
