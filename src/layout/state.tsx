@@ -15,6 +15,7 @@ import type {
     MeasurementRecord,
     SlotAssignment,
 } from './types';
+import { createDefaultAdapters } from '../types/adapters.types';
 import { paginate } from './paginate';
 import {
     buildCanvasEntries,
@@ -35,7 +36,7 @@ const logLayoutDirty = (reason: string, context: Record<string, unknown> = {}) =
 };
 
 type CanvasLayoutAction =
-    | { type: 'INITIALIZE'; payload: { template: TemplateConfig; pageVariables: PageVariables; columnCount: number; regionHeightPx: number; pageWidthPx: number; pageHeightPx: number; baseDimensions: ReturnType<typeof computeBasePageDimensions> } }
+    | { type: 'INITIALIZE'; payload: { template: TemplateConfig; pageVariables: PageVariables; columnCount: number; regionHeightPx: number; pageWidthPx: number; pageHeightPx: number; baseDimensions: ReturnType<typeof computeBasePageDimensions>; adapters: import('../types/adapters.types').CanvasAdapters } }
     | { type: 'SET_COMPONENTS'; payload: { instances: ComponentInstance[] } }
     | { type: 'SET_TEMPLATE'; payload: { template: TemplateConfig } }
     | { type: 'SET_DATA_SOURCES'; payload: { dataSources: ComponentDataSource[] } }
@@ -73,6 +74,7 @@ export const createInitialState = (): CanvasLayoutState => ({
     waitingForInitialMeasurements: false,
     assignedRegions: new Map(),
     homeRegions: new Map(),
+    adapters: createDefaultAdapters(),
 });
 
 const upsertRegionAssignment = (assignedRegions: Map<string, SlotAssignment>, entry: SlotAssignment, instanceId: string) => {
@@ -133,6 +135,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 columnCount: base.columnCount,
                 pageWidthPx: base.pageWidthPx,
                 dataSources: base.dataSources,
+                adapters: base.adapters,
             });
 
             if (process.env.NODE_ENV !== 'production') {
@@ -162,6 +165,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             dataSources: base.dataSources,
             measurements: base.measurements,
             assignedRegions: base.assignedRegions,
+            adapters: base.adapters,
         });
 
         const allMeasured = checkAllComponentsMeasured(base.components, base.measurements);
@@ -187,6 +191,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 pageWidthPx: action.payload.pageWidthPx,
                 pageHeightPx: action.payload.pageHeightPx,
                 baseDimensions: action.payload.baseDimensions,
+                adapters: action.payload.adapters,
                 layoutPlan: initialPlan,
                 pendingLayout: null,
                 isLayoutDirty: true,
@@ -367,6 +372,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 baseDimensions,
                 measurementVersion: state.measurementVersion,
                 measurements: state.measurements,
+                adapters: state.adapters,
             });
             // Clear dirty flag immediately to prevent double pagination from effect re-firing
             return { ...state, pendingLayout, isLayoutDirty: false };
@@ -452,7 +458,8 @@ export const useCanvasLayoutActions = () => {
             pageVariables: PageVariables,
             instances: ComponentInstance[],
             dataSources: ComponentDataSource[],
-            registry: Record<string, ComponentRegistryEntry>
+            registry: Record<string, ComponentRegistryEntry>,
+            adapters: import('../types/adapters.types').CanvasAdapters
         ) => {
             const baseDimensions = computeBasePageDimensions(pageVariables);
             const columnCount = pageVariables.columns.columnCount;
@@ -467,6 +474,7 @@ export const useCanvasLayoutActions = () => {
                     pageWidthPx: baseDimensions.widthPx,
                     pageHeightPx: baseDimensions.heightPx,
                     baseDimensions,
+                    adapters,
                 },
             });
 

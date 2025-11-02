@@ -142,7 +142,7 @@ export interface CanvasLayoutState {
 
     // Measure-first flow: track if all components have initial measurements
     allComponentsMeasured: boolean;
-    
+
     // Measure-first flow: explicitly track if we're waiting for initial measurements before pagination
     waitingForInitialMeasurements: boolean;
 
@@ -151,6 +151,9 @@ export interface CanvasLayoutState {
 
     // Immutable home regions from template/configuration
     homeRegions: Map<string, HomeRegionAssignment>;
+
+    // Adapters for domain-specific operations
+    adapters: import('../types/adapters.types').CanvasAdapters;
 }
 
 

@@ -11,13 +11,12 @@ import type {
     MeasurementKey,
     MeasurementRecord,
 } from './types';
+import type { CanvasAdapters } from '../types/adapters.types';
 import { toRegionContent } from './utils-generic';
 import {
     COMPONENT_VERTICAL_SPACING_PX,
     LIST_ITEM_SPACING_PX,
     computeMeasurementKey,
-    estimateActionHeight,
-    estimateListHeight,
     regionKey,
     toColumnType,
     DEFAULT_COMPONENT_HEIGHT_PX,
@@ -37,6 +36,7 @@ interface PaginateArgs {
     baseDimensions?: { contentHeightPx: number; topMarginPx: number } | null;
     measurementVersion?: number;
     measurements: Map<MeasurementKey, MeasurementRecord>;
+    adapters: CanvasAdapters;
 }
 
 const MAX_REGION_ITERATIONS = 400;
@@ -197,7 +197,8 @@ const findBestListSplit = (
     entry: CanvasLayoutEntry,
     cursor: RegionCursor,
     regionHeight: number,
-    measurements: Map<MeasurementKey, MeasurementRecord>
+    measurements: Map<MeasurementKey, MeasurementRecord>,
+    adapters: CanvasAdapters
 ): SplitDecision => {
     const items = entry.regionContent!.items;
     const BOTTOM_THRESHOLD = 1; // Cannot start in bottom 20%
@@ -221,7 +222,7 @@ const findBestListSplit = (
         const splitMeasurementKey = computeMeasurementKey(entry.instance.id, splitRegionContent);
         const measured = measurements.get(splitMeasurementKey);
         const isContinuation = entry.regionContent!.isContinuation;
-        const estimated = estimateListHeight(firstSegment, isContinuation);
+        const estimated = adapters.heightEstimator.estimateListHeight(firstSegment, isContinuation);
 
         // If split measurement doesn't exist, try proportional calculation from full measurement
         let proportionalHeight: number | undefined;
@@ -339,7 +340,7 @@ const findBestListSplit = (
     };
 };
 
-export const paginate = ({ buckets, columnCount, regionHeightPx, requestedPageCount, baseDimensions, measurementVersion, measurements }: PaginateArgs): LayoutPlan => {
+export const paginate = ({ buckets, columnCount, regionHeightPx, requestedPageCount, baseDimensions, measurementVersion, measurements, adapters }: PaginateArgs): LayoutPlan => {
     const runId = ++debugRunId;
 
     // NOTE: regionHeightPx is the measured column height from DOM, which already
@@ -568,7 +569,7 @@ export const paginate = ({ buckets, columnCount, regionHeightPx, requestedPageCo
 
                 // For list components with multiple items, use measurement-based evaluation
                 if (entry.regionContent && entry.regionContent.items.length > 1) {
-                    splitDecision = findBestListSplit(entry, cursor, regionHeightPx, measurements);
+                    splitDecision = findBestListSplit(entry, cursor, regionHeightPx, measurements, adapters);
 
                     // If split evaluation says we can't place, treat like shouldAvoidSplit
                     if (!splitDecision.canPlace) {
@@ -828,7 +829,7 @@ export const paginate = ({ buckets, columnCount, regionHeightPx, requestedPageCo
                     const availableHeight = Math.max(regionHeightPx - cursor.currentOffset, 0);
 
                     items.forEach((item, itemIndex) => {
-                        const itemHeight = estimateActionHeight(item) + (itemIndex > 0 ? LIST_ITEM_SPACING_PX : 0);
+                        const itemHeight = adapters.heightEstimator.estimateItemHeight(item) + (itemIndex > 0 ? LIST_ITEM_SPACING_PX : 0);
                         if (cumulativeHeight + itemHeight <= availableHeight || placedItems.length === 0) {
                             placedItems.push(item);
                             cumulativeHeight += itemHeight;
@@ -955,7 +956,7 @@ export const paginate = ({ buckets, columnCount, regionHeightPx, requestedPageCo
                         ...entry,
                         regionContent: followUpContent,
                         measurementKey: computeMeasurementKey(entry.instance.id, followUpContent),
-                        estimatedHeight: estimateListHeight(remainingItems, true), // Continuation segment
+                        estimatedHeight: adapters.heightEstimator.estimateListHeight(remainingItems, true), // Continuation segment
                         span: undefined,
                         overflow: true,
                         overflowRouted: true,

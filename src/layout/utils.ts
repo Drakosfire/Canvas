@@ -19,36 +19,8 @@ import type {
 } from './types';
 import { toRegionContent } from './utils-generic';
 
-// Temporary stubs for statblock-specific utilities
-// TODO: Replace with adapter pattern or make configurable
-function getPrimaryStatblock<T = unknown>(dataSources: ComponentDataSource[]): T | undefined {
-    const source = dataSources.find((s) => s.type === 'statblock');
-    return source?.payload as T | undefined;
-}
-
-function normalizeActionArray<T = unknown>(items: T[] | undefined | null): T[] {
-    return items ? (Array.isArray(items) ? items : []) : [];
-}
-
-function resolveDataReference<T = unknown>(
-    dataSources: ComponentDataSource[],
-    dataRef: ComponentDataReference
-): T | undefined {
-    if (dataRef.type === 'statblock') {
-        const source = dataSources.find((s) => s.type === 'statblock');
-        if (source && typeof source.payload === 'object' && source.payload !== null) {
-            const payload = source.payload as Record<string, unknown>;
-            return payload[dataRef.path] as T | undefined;
-        }
-    } else if (dataRef.type === 'custom') {
-        const source = dataSources.find((s) => s.type === 'custom');
-        if (source && typeof source.payload === 'object' && source.payload !== null) {
-            const payload = source.payload as Record<string, unknown>;
-            return payload[dataRef.key] as T | undefined;
-        }
-    }
-    return undefined;
-}
+// Adapter imports
+import type { CanvasAdapters } from '../types/adapters.types';
 
 export const PX_PER_INCH = 96;
 export const MM_PER_INCH = 25.4;
@@ -59,13 +31,10 @@ export const DEFAULT_PAGE_TOP_MARGIN_MM = 18;
 export const DEFAULT_PAGE_BOTTOM_MARGIN_MM = 18;
 export const COMPONENT_VERTICAL_SPACING_PX = 12; // Reduced from 18px for tighter layout
 export const LIST_ITEM_SPACING_PX = 8; // Reduced from 12px for tighter layout
-export const ACTION_HEADER_HEIGHT_PX = 36;
-export const ACTION_CONTINUATION_HEADER_HEIGHT_PX = 28;
-export const ACTION_META_LINE_HEIGHT_PX = 16;
-export const ACTION_DESC_LINE_HEIGHT_PX = 18;
-export const ACTION_AVG_CHARS_PER_LINE = 75;
 export const DEFAULT_COMPONENT_HEIGHT_PX = 200;
-export const MIN_LIST_ITEM_HEIGHT_PX = ACTION_HEADER_HEIGHT_PX + ACTION_DESC_LINE_HEIGHT_PX;
+
+// Action-specific height constants removed - now provided by adapters
+// Applications can implement their own height estimation in HeightEstimator adapter
 
 export const regionKey = (page: number, column: number) => `${page}:${column}`;
 
@@ -174,34 +143,9 @@ export const resolveLocation = (
     return { page: 1, column: columnCount === 1 ? 1 : inferredColumn };
 };
 
-const lineCountFromText = (text: string | undefined, avgCharsPerLine: number) => {
-    if (!text) return 0;
-    const length = text.length;
-    if (length <= 0) return 0;
-    return Math.ceil(length / avgCharsPerLine);
-};
-
-// Generic height estimation (accepts any object with desc-like property)
-export const estimateActionHeight = (item: unknown) => {
-    if (!item || typeof item !== 'object') return MIN_LIST_ITEM_HEIGHT_PX;
-    const nameHeight = ACTION_HEADER_HEIGHT_PX;
-    // Check for common metadata fields
-    const hasMeta = 'usage' in item || 'recharge' in item || 'range' in item || 
-                     'damageType' in item || 'damage' in item || 'attackBonus' in item;
-    const metaHeight = hasMeta ? ACTION_META_LINE_HEIGHT_PX : 0;
-    const desc = 'desc' in item && typeof item.desc === 'string' ? item.desc : '';
-    const descLines = lineCountFromText(desc, ACTION_AVG_CHARS_PER_LINE);
-    const descHeight = descLines * ACTION_DESC_LINE_HEIGHT_PX;
-    const total = nameHeight + metaHeight + descHeight;
-    return Math.max(total, MIN_LIST_ITEM_HEIGHT_PX);
-};
-
-export const estimateListHeight = (items: unknown[], isContinuation: boolean = false): number => {
-    if (items.length === 0) return 0;
-    const itemsHeight = items.reduce((acc: number, item) => acc + estimateActionHeight(item), 0);
-    const spacingHeight = (items.length - 1) * LIST_ITEM_SPACING_PX;
-    return itemsHeight + spacingHeight;
-};
+// Height estimation functions removed - now provided by adapters
+// Applications implement HeightEstimator adapter with domain-specific logic
+// (e.g., statblock adapters provide Action-specific height estimation)
 
 const REGION_KIND_MAP: Partial<Record<ComponentInstance['type'], RegionListContent['kind']>> = {
     'action-section': 'action-list',
@@ -221,6 +165,7 @@ interface BuildBucketsArgs {
     dataSources: ComponentDataSource[];
     measurements: Map<MeasurementKey, MeasurementRecord>;
     assignedRegions?: Map<string, SlotAssignment>;
+    adapters: CanvasAdapters;
 }
 
 export const buildBuckets = ({
@@ -231,6 +176,7 @@ export const buildBuckets = ({
     dataSources,
     measurements,
     assignedRegions,
+    adapters,
 }: BuildBucketsArgs): RegionBuckets => {
     const slotOrder = buildSlotOrder(template);
     const buckets: RegionBuckets = new Map();
@@ -249,38 +195,38 @@ export const buildBuckets = ({
         const listKind = REGION_KIND_MAP[instance.type];
 
         if (listKind) {
-            const statblock = getPrimaryStatblock(dataSources);
-            const resolved = resolveDataReference(dataSources, instance.dataRef);
+            const statblock = adapters.dataResolver.getPrimarySource(dataSources, 'statblock');
+            const resolved = adapters.dataResolver.resolveDataReference(dataSources, instance.dataRef);
 
             const itemsSource: unknown[] = (() => {
                 switch (instance.type) {
                     case 'action-section': {
-                        if (resolved && Array.isArray(resolved)) return normalizeActionArray(resolved);
+                        if (resolved && Array.isArray(resolved)) return adapters.listNormalizer.normalizeListItems(resolved);
                         const actions = statblock ? ((statblock as Record<string, unknown> as { actions?: unknown[] }).actions ?? undefined) : undefined;
-                        return normalizeActionArray(actions);
+                        return adapters.listNormalizer.normalizeListItems(actions);
                     }
                     case 'trait-list': {
-                        if (resolved && Array.isArray(resolved)) return normalizeActionArray(resolved);
+                        if (resolved && Array.isArray(resolved)) return adapters.listNormalizer.normalizeListItems(resolved);
                         const abilities = statblock ? ((statblock as Record<string, unknown> as { specialAbilities?: unknown[] }).specialAbilities ?? undefined) : undefined;
-                        return normalizeActionArray(abilities);
+                        return adapters.listNormalizer.normalizeListItems(abilities);
                     }
                     case 'bonus-action-section': {
-                        if (resolved && Array.isArray(resolved)) return normalizeActionArray(resolved);
+                        if (resolved && Array.isArray(resolved)) return adapters.listNormalizer.normalizeListItems(resolved);
                         const bonusActions = statblock ? ((statblock as Record<string, unknown> as { bonusActions?: unknown[] }).bonusActions ?? undefined) : undefined;
-                        return normalizeActionArray(bonusActions);
+                        return adapters.listNormalizer.normalizeListItems(bonusActions);
                     }
                     case 'reaction-section': {
-                        if (resolved && Array.isArray(resolved)) return normalizeActionArray(resolved);
+                        if (resolved && Array.isArray(resolved)) return adapters.listNormalizer.normalizeListItems(resolved);
                         const reactions = statblock ? ((statblock as Record<string, unknown> as { reactions?: unknown[] }).reactions ?? undefined) : undefined;
-                        return normalizeActionArray(reactions);
+                        return adapters.listNormalizer.normalizeListItems(reactions);
                     }
                     case 'legendary-actions': {
                         const legendary = (resolved as { actions?: unknown[] }) ?? (statblock as { legendaryActions?: { actions?: unknown[] } })?.legendaryActions;
-                        return normalizeActionArray(legendary?.actions);
+                        return adapters.listNormalizer.normalizeListItems(legendary?.actions);
                     }
                     case 'lair-actions': {
                         const lair = (resolved as { actions?: unknown[] }) ?? (statblock as { lairActions?: { actions?: unknown[] } })?.lairActions;
-                        return normalizeActionArray(lair?.actions);
+                        return adapters.listNormalizer.normalizeListItems(lair?.actions);
                     }
                     case 'spellcasting-block': {
                         const spellcasting = (resolved as { cantrips?: unknown[]; knownSpells?: unknown[] }) ?? (statblock as { spells?: { cantrips?: unknown[]; known?: unknown[] } })?.spells;
@@ -302,7 +248,7 @@ export const buildBuckets = ({
                             school: spell.school,
                             usage: spell.usage,
                         }));
-                        return normalizeActionArray([...cantrips, ...knownSpells] as unknown[]);
+                        return adapters.listNormalizer.normalizeListItems([...cantrips, ...knownSpells] as unknown[]);
                     }
                     default:
                         return [];
@@ -408,7 +354,7 @@ export const buildBuckets = ({
                     homeRegion: resolvedHome,
                     homeRegionKey: homeKey,
                     regionContent,
-                    estimatedHeight: record?.height ?? estimateListHeight(segment.items, segment.startIndex > 0),
+                    estimatedHeight: record?.height ?? adapters.heightEstimator.estimateListHeight(segment.items, segment.startIndex > 0),
                     measurementKey,
                     needsMeasurement: !record,
                     span: record ? { top: 0, bottom: record.height, height: record.height } : undefined,
@@ -475,12 +421,14 @@ export const createInitialMeasurementEntries = ({
     columnCount,
     pageWidthPx,
     dataSources,
+    adapters,
 }: {
     instances: ComponentInstance[];
     template: TemplateConfig;
     columnCount: number;
     pageWidthPx: number;
     dataSources: ComponentDataSource[];
+    adapters: CanvasAdapters;
 }): MeasurementEntry[] => {
     const entries: MeasurementEntry[] = [];
     const slotOrder = buildSlotOrder(template);
@@ -504,39 +452,39 @@ export const createInitialMeasurementEntries = ({
         // For list components, generate split measurements (including full list)
         // For non-list components, create basic block measurement
         if (listKind) {
-            const statblock = getPrimaryStatblock(dataSources);
-            const resolved = resolveDataReference(dataSources, instance.dataRef);
+            const statblock = adapters.dataResolver.getPrimarySource(dataSources, 'statblock');
+            const resolved = adapters.dataResolver.resolveDataReference(dataSources, instance.dataRef);
 
             // Extract items using same logic as buildBuckets
             const itemsSource: unknown[] = (() => {
                 switch (instance.type) {
                     case 'action-section': {
-                        if (resolved && Array.isArray(resolved)) return normalizeActionArray(resolved);
+                        if (resolved && Array.isArray(resolved)) return adapters.listNormalizer.normalizeListItems(resolved);
                         const actions = statblock ? ((statblock as Record<string, unknown> as { actions?: unknown[] }).actions ?? undefined) : undefined;
-                        return normalizeActionArray(actions);
+                        return adapters.listNormalizer.normalizeListItems(actions);
                     }
                     case 'trait-list': {
-                        if (resolved && Array.isArray(resolved)) return normalizeActionArray(resolved);
+                        if (resolved && Array.isArray(resolved)) return adapters.listNormalizer.normalizeListItems(resolved);
                         const abilities = statblock ? ((statblock as Record<string, unknown> as { specialAbilities?: unknown[] }).specialAbilities ?? undefined) : undefined;
-                        return normalizeActionArray(abilities);
+                        return adapters.listNormalizer.normalizeListItems(abilities);
                     }
                     case 'bonus-action-section': {
-                        if (resolved && Array.isArray(resolved)) return normalizeActionArray(resolved);
+                        if (resolved && Array.isArray(resolved)) return adapters.listNormalizer.normalizeListItems(resolved);
                         const bonusActions = statblock ? ((statblock as Record<string, unknown> as { bonusActions?: unknown[] }).bonusActions ?? undefined) : undefined;
-                        return normalizeActionArray(bonusActions);
+                        return adapters.listNormalizer.normalizeListItems(bonusActions);
                     }
                     case 'reaction-section': {
-                        if (resolved && Array.isArray(resolved)) return normalizeActionArray(resolved);
+                        if (resolved && Array.isArray(resolved)) return adapters.listNormalizer.normalizeListItems(resolved);
                         const reactions = statblock ? ((statblock as Record<string, unknown> as { reactions?: unknown[] }).reactions ?? undefined) : undefined;
-                        return normalizeActionArray(reactions);
+                        return adapters.listNormalizer.normalizeListItems(reactions);
                     }
                     case 'legendary-actions': {
                         const legendary = (resolved as { actions?: unknown[] }) ?? (statblock as { legendaryActions?: { actions?: unknown[] } })?.legendaryActions;
-                        return normalizeActionArray(legendary?.actions);
+                        return adapters.listNormalizer.normalizeListItems(legendary?.actions);
                     }
                     case 'lair-actions': {
                         const lair = (resolved as { actions?: unknown[] }) ?? (statblock as { lairActions?: { actions?: unknown[] } })?.lairActions;
-                        return normalizeActionArray(lair?.actions);
+                        return adapters.listNormalizer.normalizeListItems(lair?.actions);
                     }
                     case 'spellcasting-block': {
                         const spellcasting = (resolved as { cantrips?: unknown[]; knownSpells?: unknown[] }) ?? (statblock as { spells?: { cantrips?: unknown[]; known?: unknown[] } })?.spells;
@@ -556,7 +504,7 @@ export const createInitialMeasurementEntries = ({
                             school: spell.school,
                             usage: spell.usage,
                         }));
-                        return normalizeActionArray([...cantrips, ...knownSpells] as unknown[]);
+                        return adapters.listNormalizer.normalizeListItems([...cantrips, ...knownSpells] as unknown[]);
                     }
                     default:
                         return [];
@@ -624,7 +572,7 @@ export const createInitialMeasurementEntries = ({
                     homeRegion,
                     homeRegionKey: homeKey,
                     regionContent,
-                    estimatedHeight: estimateListHeight(items, isContinuation),
+                    estimatedHeight: adapters.heightEstimator.estimateListHeight(items, isContinuation),
                     measurementKey: splitMeasurementKey,
                     needsMeasurement: true,
                     slotDimensions,
@@ -669,7 +617,7 @@ export const createInitialMeasurementEntries = ({
                         homeRegion,
                         homeRegionKey: homeKey,
                         regionContent,
-                        estimatedHeight: estimateListHeight(items, isContinuation),
+                        estimatedHeight: adapters.heightEstimator.estimateListHeight(items, isContinuation),
                         measurementKey: splitMeasurementKey,
                         needsMeasurement: true,
                         slotDimensions,
@@ -705,7 +653,7 @@ export const createInitialMeasurementEntries = ({
                         homeRegion,
                         homeRegionKey: homeKey,
                         regionContent,
-                        estimatedHeight: estimateListHeight(items, isContinuation),
+                        estimatedHeight: adapters.heightEstimator.estimateListHeight(items, isContinuation),
                         measurementKey: splitMeasurementKey,
                         needsMeasurement: true,
                         slotDimensions,
@@ -743,6 +691,7 @@ export interface BuildCanvasEntriesArgs {
     dataSources: ComponentDataSource[];
     measurements: Map<MeasurementKey, MeasurementRecord>;
     assignedRegions?: Map<string, SlotAssignment>;
+    adapters: CanvasAdapters;
 }
 
 export const buildCanvasEntries = ({
@@ -753,8 +702,9 @@ export const buildCanvasEntries = ({
     dataSources,
     measurements,
     assignedRegions,
+    adapters,
 }: BuildCanvasEntriesArgs): CanvasEntriesResult => {
-    const buckets = buildBuckets({ instances, template, columnCount, pageWidthPx, dataSources, measurements, assignedRegions });
+    const buckets = buildBuckets({ instances, template, columnCount, pageWidthPx, dataSources, measurements, assignedRegions, adapters });
 
     // CRITICAL: Always regenerate ALL split measurements, not just the ones used in pagination
     // This ensures all split variations remain available for future pagination runs
@@ -765,6 +715,7 @@ export const buildCanvasEntries = ({
         columnCount,
         pageWidthPx,
         dataSources,
+        adapters,
     });
 
     return { buckets, measurementEntries: allMeasurementEntries };

@@ -7,6 +7,7 @@ import type {
     PageVariables,
     TemplateConfig,
 } from '../types/canvas.types';
+import type { CanvasAdapters } from '../types/adapters.types';
 import type { MeasurementEntry } from '../layout/types';
 import { MeasurementLayer } from '../layout/measurement';
 import { useCanvasLayoutActions, useCanvasLayoutState } from '../layout/state';
@@ -18,6 +19,7 @@ interface UseCanvasLayoutArgs {
     dataSources: ComponentDataSource[];
     componentRegistry: Record<string, ComponentRegistryEntry>;
     pageVariables: PageVariables;
+    adapters: CanvasAdapters;
 }
 
 export const useCanvasLayout = ({
@@ -26,6 +28,7 @@ export const useCanvasLayout = ({
     dataSources,
     componentRegistry,
     pageVariables,
+    adapters,
 }: UseCanvasLayoutArgs) => {
     const state = useCanvasLayoutState();
     const {
@@ -80,7 +83,7 @@ export const useCanvasLayout = ({
             });
         }
 
-        initialize(template, pageVariables, componentInstances, dataSources, componentRegistry);
+        initialize(template, pageVariables, componentInstances, dataSources, componentRegistry, adapters);
         prevTemplateRef.current = template;
         prevComponentIdsRef.current = memoizedComponents;
         prevDataSourceIdsRef.current = memoizedDataSources;

@@ -321,7 +321,7 @@ export const createMeasurementEntry = (overrides: Partial<MeasurementEntry> = {}
     ...overrides,
 });
 
-interface MeasurementLayerProps {
+export interface MeasurementLayerProps {
     entries: MeasurementEntry[];
     renderComponent: (entry: MeasurementEntry) => React.ReactNode;
     onMeasurements: MeasurementDispatcher;

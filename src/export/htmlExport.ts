@@ -5,6 +5,7 @@
  */
 
 import type { StatblockPageDocument, TemplateConfig } from '../types/canvas.types';
+import type { CanvasAdapters } from '../types/adapters.types';
 import type { BasePageDimensions } from '../layout/utils';
 import { computeBasePageDimensions } from '../layout/utils';
 
@@ -69,6 +70,7 @@ export async function exportToHTML(
     page: StatblockPageDocument,
     template: TemplateConfig,
     baseDimensions: BasePageDimensions,
+    adapters: CanvasAdapters,
     options: ExportOptions = {}
 ): Promise<string> {
     const {
@@ -77,11 +79,8 @@ export async function exportToHTML(
         title = 'D&D 5e Statblock',
     } = options;
 
-    // Extract name from statblock data (generic - applications can provide name extractor)
-    const statblock = page.dataSources.find((s) => s.type === 'statblock')?.payload;
-    const creatureName = (statblock && typeof statblock === 'object' && 'name' in statblock)
-        ? String((statblock as { name: unknown }).name)
-        : 'Creature';
+    // Extract name from statblock data using adapter
+    const creatureName = adapters.metadataExtractor.extractDisplayName(page.dataSources) || 'Creature';
 
     const cssBaseUrl = getExportCssBaseUrl();
     const cssLinks = includeStyles
@@ -501,19 +500,17 @@ export function downloadHTML(html: string, filename: string): void {
  */
 export async function exportPageToHTMLFile(
     page: StatblockPageDocument,
-    template: TemplateConfig
+    template: TemplateConfig,
+    adapters: CanvasAdapters
 ): Promise<void> {
-    // Extract name from statblock data (generic)
-    const statblock = page.dataSources.find((s) => s.type === 'statblock')?.payload;
-    const creatureName = (statblock && typeof statblock === 'object' && 'name' in statblock)
-        ? String((statblock as { name: unknown }).name)
-        : 'Creature';
+    // Extract name from statblock data using adapter
+    const creatureName = adapters.metadataExtractor.extractDisplayName(page.dataSources) || 'Creature';
     const filename = `${creatureName.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_statblock.html`;
 
     // Compute base page dimensions (matches what pagination system uses)
     const baseDimensions = computeBasePageDimensions(page.pageVariables);
 
-    const html = await exportToHTML(page, template, baseDimensions, {
+    const html = await exportToHTML(page, template, baseDimensions, adapters, {
         title: creatureName,
         includeStyles: true,
         includeMetadata: true,
