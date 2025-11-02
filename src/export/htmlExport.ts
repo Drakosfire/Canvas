@@ -4,7 +4,7 @@
  * Export statblock canvas to standalone HTML file.
  */
 
-import type { StatblockPageDocument, TemplateConfig } from '../types/canvas.types';
+import type { PageDocument, TemplateConfig } from '../types/canvas.types';
 import type { CanvasAdapters } from '../types/adapters.types';
 import type { BasePageDimensions } from '../layout/utils';
 import { computeBasePageDimensions } from '../layout/utils';
@@ -67,7 +67,7 @@ function captureStatblockDOM(): string {
  * Generate standalone HTML from page document
  */
 export async function exportToHTML(
-    page: StatblockPageDocument,
+    page: PageDocument,
     template: TemplateConfig,
     baseDimensions: BasePageDimensions,
     adapters: CanvasAdapters,
@@ -499,7 +499,7 @@ export function downloadHTML(html: string, filename: string): void {
  * Export page document to HTML file
  */
 export async function exportPageToHTMLFile(
-    page: StatblockPageDocument,
+    page: PageDocument,
     template: TemplateConfig,
     adapters: CanvasAdapters
 ): Promise<void> {

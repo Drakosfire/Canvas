@@ -209,7 +209,7 @@ export interface PageHistoryEntry {
     summary: string;
 }
 
-export interface StatblockPageDocument {
+export interface PageDocument {
     id: string;
     projectId: string;
     ownerId: string;
@@ -267,7 +267,7 @@ export interface CanvasComponentProps {
 }
 
 export interface PageLoadResponse {
-    page: StatblockPageDocument;
+    page: PageDocument;
     template: TemplateConfig;
 }
 

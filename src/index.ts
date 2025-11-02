@@ -24,7 +24,7 @@ export {
 } from './data';
 
 export type {
-    StatblockPageDocument,
+    PageDocument,
 } from './types/canvas.types';
 
 // Export Utilities

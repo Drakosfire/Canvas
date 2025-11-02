@@ -1,13 +1,13 @@
 /**
  * Page Document Builder
  * 
- * Utilities for building StatblockPageDocument instances from live data.
+ * Utilities for building PageDocument instances from live data.
  * Handles data hydration and template instantiation.
  */
 
 import type {
     ComponentDataSource,
-    StatblockPageDocument,
+    PageDocument,
     TemplateConfig,
     ComponentInstance,
 } from '../types/canvas.types';
@@ -23,7 +23,7 @@ interface BuildPageDocumentOptions<T = unknown> {
 /**
  * Build a complete page document from a template and live data
  */
-export function buildPageDocument<T = unknown>(options: BuildPageDocumentOptions<T>): StatblockPageDocument {
+export function buildPageDocument<T = unknown>(options: BuildPageDocumentOptions<T>): PageDocument {
     const {
         template,
         statblockData,
@@ -94,10 +94,10 @@ export function buildPageDocument<T = unknown>(options: BuildPageDocumentOptions
  * Update data sources in an existing page document
  */
 export function updatePageDataSources<T = unknown>(
-    page: StatblockPageDocument,
+    page: PageDocument,
     statblockData?: T,
     customData?: Record<string, unknown>
-): StatblockPageDocument {
+): PageDocument {
     const updatedSources = page.dataSources.map((source) => {
         if (source.type === 'statblock' && statblockData) {
             return {

@@ -30,6 +30,11 @@ export const useCanvasLayout = ({
     pageVariables,
     adapters,
 }: UseCanvasLayoutArgs) => {
+    // Marker to prove we're using Canvas package (not local LandingPage/src/canvas/)
+    if (process.env.NODE_ENV !== 'production') {
+        console.log('📦 [Canvas Package] useCanvasLayout called with adapters:', !!adapters);
+    }
+
     const state = useCanvasLayoutState();
     const {
         initialize,

@@ -42,9 +42,9 @@ describe('Package Type Exports', () => {
             PageVariables: Canvas.PageVariables;
             CanvasLayoutEntry: Canvas.CanvasLayoutEntry;
             LayoutPlan: Canvas.LayoutPlan;
-            StatblockPageDocument: Canvas.StatblockPageDocument;
+            PageDocument: Canvas.PageDocument;
         };
-        
+
         // If we get here, types exist
         expect(true).toBe(true);
     });

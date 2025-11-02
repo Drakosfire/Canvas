@@ -128,6 +128,13 @@ export interface CanvasAdapters {
     regionContentFactory: RegionContentFactory;
     heightEstimator: HeightEstimator;
     metadataExtractor: MetadataExtractor;
+
+    /**
+     * Component type to region kind mapping
+     * Maps component types to their list content kind (or undefined for non-list components)
+     * Example: { 'action-section': 'action-list', 'trait-list': 'trait-list' }
+     */
+    componentTypeMap: Record<string, string | undefined>;
 }
 
 /**
@@ -188,6 +195,7 @@ export const createDefaultMetadataExtractor = (): MetadataExtractor => ({
 export function createDefaultAdapters(options?: {
     defaultItemHeight?: number;
     defaultComponentHeight?: number;
+    componentTypeMap?: Record<string, string | undefined>;
 }): CanvasAdapters {
     return {
         dataResolver: createDefaultDataResolver(),
@@ -207,6 +215,7 @@ export function createDefaultAdapters(options?: {
             options?.defaultComponentHeight
         ),
         metadataExtractor: createDefaultMetadataExtractor(),
+        componentTypeMap: options?.componentTypeMap ?? {},
     };
 }
 

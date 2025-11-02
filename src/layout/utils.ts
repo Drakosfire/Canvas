@@ -147,15 +147,8 @@ export const resolveLocation = (
 // Applications implement HeightEstimator adapter with domain-specific logic
 // (e.g., statblock adapters provide Action-specific height estimation)
 
-const REGION_KIND_MAP: Partial<Record<ComponentInstance['type'], RegionListContent['kind']>> = {
-    'action-section': 'action-list',
-    'trait-list': 'trait-list',
-    'bonus-action-section': 'bonus-action-list',
-    'reaction-section': 'reaction-list',
-    'legendary-actions': 'legendary-action-list',
-    'lair-actions': 'lair-action-list',
-    'spellcasting-block': 'spell-list',
-};
+// Component type mapping moved to CanvasAdapters.componentTypeMap
+// Applications configure which component types are list components
 
 interface BuildBucketsArgs {
     instances: ComponentInstance[];
@@ -192,68 +185,20 @@ export const buildBuckets = ({
         const slotIndex = instance.layout.slotId ? slotOrder.get(instance.layout.slotId) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
         const slotDimensions = slotDimensionLookup(template, instance.layout.slotId);
         const homeKey = regionKey(resolvedHome.page, resolvedHome.column);
-        const listKind = REGION_KIND_MAP[instance.type];
+        const listKind = adapters.componentTypeMap[instance.type];
 
         if (listKind) {
-            const statblock = adapters.dataResolver.getPrimarySource(dataSources, 'statblock');
+            // Resolve data using adapter - fully generic, no statblock-specific logic
             const resolved = adapters.dataResolver.resolveDataReference(dataSources, instance.dataRef);
 
-            const itemsSource: unknown[] = (() => {
-                switch (instance.type) {
-                    case 'action-section': {
-                        if (resolved && Array.isArray(resolved)) return adapters.listNormalizer.normalizeListItems(resolved);
-                        const actions = statblock ? ((statblock as Record<string, unknown> as { actions?: unknown[] }).actions ?? undefined) : undefined;
-                        return adapters.listNormalizer.normalizeListItems(actions);
-                    }
-                    case 'trait-list': {
-                        if (resolved && Array.isArray(resolved)) return adapters.listNormalizer.normalizeListItems(resolved);
-                        const abilities = statblock ? ((statblock as Record<string, unknown> as { specialAbilities?: unknown[] }).specialAbilities ?? undefined) : undefined;
-                        return adapters.listNormalizer.normalizeListItems(abilities);
-                    }
-                    case 'bonus-action-section': {
-                        if (resolved && Array.isArray(resolved)) return adapters.listNormalizer.normalizeListItems(resolved);
-                        const bonusActions = statblock ? ((statblock as Record<string, unknown> as { bonusActions?: unknown[] }).bonusActions ?? undefined) : undefined;
-                        return adapters.listNormalizer.normalizeListItems(bonusActions);
-                    }
-                    case 'reaction-section': {
-                        if (resolved && Array.isArray(resolved)) return adapters.listNormalizer.normalizeListItems(resolved);
-                        const reactions = statblock ? ((statblock as Record<string, unknown> as { reactions?: unknown[] }).reactions ?? undefined) : undefined;
-                        return adapters.listNormalizer.normalizeListItems(reactions);
-                    }
-                    case 'legendary-actions': {
-                        const legendary = (resolved as { actions?: unknown[] }) ?? (statblock as { legendaryActions?: { actions?: unknown[] } })?.legendaryActions;
-                        return adapters.listNormalizer.normalizeListItems(legendary?.actions);
-                    }
-                    case 'lair-actions': {
-                        const lair = (resolved as { actions?: unknown[] }) ?? (statblock as { lairActions?: { actions?: unknown[] } })?.lairActions;
-                        return adapters.listNormalizer.normalizeListItems(lair?.actions);
-                    }
-                    case 'spellcasting-block': {
-                        const spellcasting = (resolved as { cantrips?: unknown[]; knownSpells?: unknown[] }) ?? (statblock as { spells?: { cantrips?: unknown[]; known?: unknown[] } })?.spells;
-                        // Combine cantrips and known spells into a single list for splitting
-                        // Preserve ALL spell properties (level, school, usage) for proper rendering
-                        const cantrips = (spellcasting?.cantrips ?? []).map((spell: any) => ({
-                            id: spell.id ?? `cantrip-${spell.name?.toLowerCase().replace(/\s+/g, '-')}`,
-                            name: spell.name,
-                            desc: spell.description ?? '',
-                            level: spell.level ?? 0,
-                            school: spell.school,
-                            usage: spell.usage,
-                        }));
-                        const knownSpells = (spellcasting?.knownSpells ?? []).map((spell: any) => ({
-                            id: spell.id ?? `spell-${spell.name?.toLowerCase().replace(/\s+/g, '-')}`,
-                            name: spell.name,
-                            desc: spell.description ?? '',
-                            level: spell.level,
-                            school: spell.school,
-                            usage: spell.usage,
-                        }));
-                        return adapters.listNormalizer.normalizeListItems([...cantrips, ...knownSpells] as unknown[]);
-                    }
-                    default:
-                        return [];
-                }
-            })();
+            // Normalize items using adapter
+            // Adapter is responsible for:
+            // - Handling nested structures (e.g., legendaryActions.actions)
+            // - Combining multiple arrays (e.g., cantrips + knownSpells)
+            // - Adding default IDs if missing
+            const itemsSource = adapters.listNormalizer.normalizeListItems(
+                resolved as unknown[] | undefined
+            );
 
             if (itemsSource.length === 0) {
                 const key = regionKey(baseLocation.page, baseLocation.column);
@@ -302,29 +247,12 @@ export const buildBuckets = ({
                 segments.get(key)!.items.push(item);
             });
 
-            const summaryMetadata = (() => {
-                switch (instance.type) {
-                    case 'legendary-actions':
-                        return {
-                            legendarySummary:
-                                (resolved as { description?: string; actionsPerTurn?: number })?.description ??
-                                (statblock as { legendaryActions?: { description?: string } })?.legendaryActions?.description ??
-                                'The creature can take the following legendary actions, choosing from the options below.',
-                            legendaryFrequency:
-                                (resolved as { actionsPerTurn?: number })?.actionsPerTurn ??
-                                (statblock as { legendaryActions?: { actionsPerTurn?: number } })?.legendaryActions?.actionsPerTurn,
-                        };
-                    case 'lair-actions':
-                        return {
-                            lairSummary:
-                                (resolved as { description?: string })?.description ??
-                                (statblock as { lairActions?: { description?: string } })?.lairActions?.description ??
-                                'On initiative count 20 (losing initiative ties), the creature uses one of the following lair actions.',
-                        };
-                    default:
-                        return undefined;
-                }
-            })();
+            // Extract summary metadata from resolved data (if present)
+            // Adapter is responsible for including metadata in resolved data structure
+            // Examples: { description: "...", actionsPerTurn: 3, actions: [...] }
+            const summaryMetadata = resolved && typeof resolved === 'object' && !Array.isArray(resolved)
+                ? (resolved as Record<string, unknown>)
+                : undefined;
 
             segments.forEach((segment, key) => {
                 const [pagePart, columnPart] = key.split(':');
@@ -447,69 +375,18 @@ export const createInitialMeasurementEntries = ({
         };
 
         const homeKey = regionKey(homeRegion.page, homeRegion.column);
-        const listKind = REGION_KIND_MAP[instance.type];
+        const listKind = adapters.componentTypeMap[instance.type];
 
         // For list components, generate split measurements (including full list)
         // For non-list components, create basic block measurement
         if (listKind) {
-            const statblock = adapters.dataResolver.getPrimarySource(dataSources, 'statblock');
+            // Resolve data using adapter - fully generic, no statblock-specific logic
             const resolved = adapters.dataResolver.resolveDataReference(dataSources, instance.dataRef);
 
-            // Extract items using same logic as buildBuckets
-            const itemsSource: unknown[] = (() => {
-                switch (instance.type) {
-                    case 'action-section': {
-                        if (resolved && Array.isArray(resolved)) return adapters.listNormalizer.normalizeListItems(resolved);
-                        const actions = statblock ? ((statblock as Record<string, unknown> as { actions?: unknown[] }).actions ?? undefined) : undefined;
-                        return adapters.listNormalizer.normalizeListItems(actions);
-                    }
-                    case 'trait-list': {
-                        if (resolved && Array.isArray(resolved)) return adapters.listNormalizer.normalizeListItems(resolved);
-                        const abilities = statblock ? ((statblock as Record<string, unknown> as { specialAbilities?: unknown[] }).specialAbilities ?? undefined) : undefined;
-                        return adapters.listNormalizer.normalizeListItems(abilities);
-                    }
-                    case 'bonus-action-section': {
-                        if (resolved && Array.isArray(resolved)) return adapters.listNormalizer.normalizeListItems(resolved);
-                        const bonusActions = statblock ? ((statblock as Record<string, unknown> as { bonusActions?: unknown[] }).bonusActions ?? undefined) : undefined;
-                        return adapters.listNormalizer.normalizeListItems(bonusActions);
-                    }
-                    case 'reaction-section': {
-                        if (resolved && Array.isArray(resolved)) return adapters.listNormalizer.normalizeListItems(resolved);
-                        const reactions = statblock ? ((statblock as Record<string, unknown> as { reactions?: unknown[] }).reactions ?? undefined) : undefined;
-                        return adapters.listNormalizer.normalizeListItems(reactions);
-                    }
-                    case 'legendary-actions': {
-                        const legendary = (resolved as { actions?: unknown[] }) ?? (statblock as { legendaryActions?: { actions?: unknown[] } })?.legendaryActions;
-                        return adapters.listNormalizer.normalizeListItems(legendary?.actions);
-                    }
-                    case 'lair-actions': {
-                        const lair = (resolved as { actions?: unknown[] }) ?? (statblock as { lairActions?: { actions?: unknown[] } })?.lairActions;
-                        return adapters.listNormalizer.normalizeListItems(lair?.actions);
-                    }
-                    case 'spellcasting-block': {
-                        const spellcasting = (resolved as { cantrips?: unknown[]; knownSpells?: unknown[] }) ?? (statblock as { spells?: { cantrips?: unknown[]; known?: unknown[] } })?.spells;
-                        const cantrips = (spellcasting?.cantrips ?? []).map((spell: any) => ({
-                            id: spell.id ?? `cantrip-${spell.name?.toLowerCase().replace(/\s+/g, '-')}`,
-                            name: spell.name,
-                            desc: spell.description ?? '',
-                            level: spell.level ?? 0,
-                            school: spell.school,
-                            usage: spell.usage,
-                        }));
-                        const knownSpells = (spellcasting?.knownSpells ?? []).map((spell: any) => ({
-                            id: spell.id ?? `spell-${spell.name?.toLowerCase().replace(/\s+/g, '-')}`,
-                            name: spell.name,
-                            desc: spell.description ?? '',
-                            level: spell.level,
-                            school: spell.school,
-                            usage: spell.usage,
-                        }));
-                        return adapters.listNormalizer.normalizeListItems([...cantrips, ...knownSpells] as unknown[]);
-                    }
-                    default:
-                        return [];
-                }
-            })();
+            // Normalize items using adapter (same logic as buildBuckets)
+            const itemsSource = adapters.listNormalizer.normalizeListItems(
+                resolved as unknown[] | undefined
+            );
 
             const totalCount = itemsSource.length;
 
@@ -519,29 +396,10 @@ export const createInitialMeasurementEntries = ({
 
             // Generate summary metadata for first-segment measurements
             // This ensures measurements include the intro paragraph (e.g., legendary actions summary)
-            const summaryMetadata = (() => {
-                switch (instance.type) {
-                    case 'legendary-actions':
-                        return {
-                            legendarySummary:
-                                (resolved as { description?: string; actionsPerTurn?: number })?.description ??
-                                (statblock as { legendaryActions?: { description?: string } })?.legendaryActions?.description ??
-                                'The creature can take the following legendary actions, choosing from the options below.',
-                            legendaryFrequency:
-                                (resolved as { actionsPerTurn?: number })?.actionsPerTurn ??
-                                (statblock as { legendaryActions?: { actionsPerTurn?: number } })?.legendaryActions?.actionsPerTurn,
-                        };
-                    case 'lair-actions':
-                        return {
-                            lairSummary:
-                                (resolved as { description?: string })?.description ??
-                                (statblock as { lairActions?: { description?: string } })?.lairActions?.description ??
-                                'On initiative count 20 (losing initiative ties), the creature uses one of the following lair actions.',
-                        };
-                    default:
-                        return undefined;
-                }
-            })();
+            // Adapter is responsible for including metadata in resolved data structure
+            const summaryMetadata = resolved && typeof resolved === 'object' && !Array.isArray(resolved)
+                ? (resolved as Record<string, unknown>)
+                : undefined;
 
             // Generate split measurements for each possible split point
             // Example: For 14 spells, generate measurements for 1, 2, 3, ..., 14 items
