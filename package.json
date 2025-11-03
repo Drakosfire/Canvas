@@ -1,5 +1,5 @@
 {
-  "name": "@dungeonmind/canvas",
+  "name": "dungeonmind-canvas",
   "version": "0.1.0",
   "description": "Flexible, template-driven rendering engine for multi-column, multi-page layouts",
   "main": "dist/index.js",
@@ -50,4 +50,3 @@
   "author": "DungeonMind",
   "license": "MIT"
 }
-
