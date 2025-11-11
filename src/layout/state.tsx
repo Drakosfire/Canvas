@@ -8,6 +8,7 @@ import type {
     TemplateConfig,
 } from '../types/canvas.types';
 import type {
+    CanvasLayoutEntry,
     CanvasLayoutState,
     LayoutPlan,
     MeasurementEntry,
@@ -17,6 +18,7 @@ import type {
 } from './types';
 import { createDefaultAdapters } from '../types/adapters.types';
 import { paginate } from './paginate';
+import { SegmentRerouteCache } from './segmentTypes';
 import {
     buildCanvasEntries,
     buildBuckets,
@@ -24,15 +26,126 @@ import {
     computeHomeRegions,
     createInitialMeasurementEntries,
 } from './utils';
+import { isDebugEnabled } from './debugFlags';
 
-const shouldLogLayoutDirty = process.env.NODE_ENV !== 'production';
+// Diagnostic: Log when state.tsx loads (confirms module is loading)
+if (typeof window !== 'undefined') {
+    // eslint-disable-next-line no-console
+    console.log('🔧 [Canvas state.tsx] Module loaded, paginate imported', {
+        timestamp: new Date().toISOString(),
+        hasPaginate: typeof paginate === 'function',
+    });
+}
+
+const shouldLogLayoutDirty = (): boolean => isDebugEnabled('layout-dirty');
+const shouldLogMeasureFirst = (): boolean => isDebugEnabled('measure-first');
 
 const logLayoutDirty = (reason: string, context: Record<string, unknown> = {}) => {
-    if (!shouldLogLayoutDirty) {
+    if (!shouldLogLayoutDirty()) {
         return;
     }
     // eslint-disable-next-line no-console
     console.debug('[layout-dirty]', reason, context);
+};
+
+type DebugPlanEntrySummary = {
+    instanceId: string;
+    componentType: string;
+    slotIndex: number;
+    orderIndex: number;
+    sourceRegionKey: string;
+    region: {
+        page: number;
+        column: 1 | 2;
+    };
+    homeRegion: {
+        page: number;
+        column: 1 | 2;
+    };
+    measurementKey: string;
+    estimatedHeight: number;
+    span?: {
+        top: number;
+        bottom: number;
+        height: number;
+    };
+    overflow: boolean;
+    overflowRouted: boolean;
+    listContinuation?: {
+        isContinuation: boolean;
+        startIndex: number;
+        totalCount: number;
+    };
+};
+
+type DebugPlanColumnSummary = {
+    columnNumber: 1 | 2;
+    entryCount: number;
+    usedHeightPx?: number;
+    availableHeightPx?: number;
+    entries: DebugPlanEntrySummary[];
+};
+
+type DebugPlanSummary = {
+    pageCount: number;
+    overflowWarningCount: number;
+    overflowWarnings: LayoutPlan['overflowWarnings'];
+    pages: Array<{
+        pageNumber: number;
+        columns: DebugPlanColumnSummary[];
+    }>;
+};
+
+const round = (value: number): number => Number(value.toFixed(2));
+
+const summarizeEntryForDebug = (entry: CanvasLayoutEntry): DebugPlanEntrySummary => ({
+    instanceId: entry.instance.id,
+    componentType: entry.instance.type,
+    slotIndex: entry.slotIndex,
+    orderIndex: entry.orderIndex,
+    sourceRegionKey: entry.sourceRegionKey,
+    region: entry.region,
+    homeRegion: entry.homeRegion,
+    measurementKey: entry.measurementKey,
+    estimatedHeight: round(entry.estimatedHeight),
+    span: entry.span
+        ? {
+            top: round(entry.span.top),
+            bottom: round(entry.span.bottom),
+            height: round(entry.span.height),
+        }
+        : undefined,
+    overflow: Boolean(entry.overflow),
+    overflowRouted: Boolean(entry.overflowRouted),
+    listContinuation: entry.listContinuation
+        ? {
+            isContinuation: entry.listContinuation.isContinuation,
+            startIndex: entry.listContinuation.startIndex,
+            totalCount: entry.listContinuation.totalCount,
+        }
+        : undefined,
+});
+
+const summarizePlanForDebug = (plan: LayoutPlan | null): DebugPlanSummary | null => {
+    if (!plan) {
+        return null;
+    }
+
+    return {
+        pageCount: plan.pages.length,
+        overflowWarningCount: plan.overflowWarnings.length,
+        overflowWarnings: plan.overflowWarnings,
+        pages: plan.pages.map((page) => ({
+            pageNumber: page.pageNumber,
+            columns: page.columns.map((column) => ({
+                columnNumber: column.columnNumber,
+                entryCount: column.entries.length,
+                usedHeightPx: column.usedHeightPx,
+                availableHeightPx: column.availableHeightPx,
+                entries: column.entries.map(summarizeEntryForDebug),
+            })),
+        })),
+    };
 };
 
 type CanvasLayoutAction =
@@ -72,9 +185,12 @@ export const createInitialState = (): CanvasLayoutState => ({
     isLayoutDirty: false,
     allComponentsMeasured: false,
     waitingForInitialMeasurements: false,
+    requiredMeasurementKeys: new Set(),
+    missingMeasurementKeys: new Set(),
     assignedRegions: new Map(),
     homeRegions: new Map(),
     adapters: createDefaultAdapters(),
+    segmentRerouteCache: new SegmentRerouteCache(),
 });
 
 const upsertRegionAssignment = (assignedRegions: Map<string, SlotAssignment>, entry: SlotAssignment, instanceId: string) => {
@@ -100,6 +216,27 @@ const checkAllComponentsMeasured = (
     return true;
 };
 
+const computeRequiredMeasurementKeys = (entries: MeasurementEntry[]): Set<MeasurementKey> => {
+    const next = new Set<MeasurementKey>();
+    entries.forEach((entry) => {
+        next.add(entry.measurementKey);
+    });
+    return next;
+};
+
+const computeMissingMeasurementKeys = (
+    requiredKeys: Set<MeasurementKey>,
+    measurements: Map<MeasurementKey, MeasurementRecord>
+): Set<MeasurementKey> => {
+    const missing = new Set<MeasurementKey>();
+    requiredKeys.forEach((key) => {
+        if (!measurements.has(key)) {
+            missing.add(key);
+        }
+    });
+    return missing;
+};
+
 export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutAction): CanvasLayoutState => {
     const recomputeEntries = (base: CanvasLayoutState): CanvasLayoutState => {
         if (!base.template) {
@@ -109,6 +246,8 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 measurementEntries: [],
                 waitingForInitialMeasurements: false,
                 allComponentsMeasured: false,
+                requiredMeasurementKeys: new Set(),
+                missingMeasurementKeys: new Set(),
             };
         }
 
@@ -117,7 +256,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
         const hasComponents = base.components.length > 0;
         const shouldWaitForMeasurements = hasNoMeasurements && hasComponents;
 
-        if (process.env.NODE_ENV !== 'production') {
+        if (shouldLogMeasureFirst()) {
             console.log('[measure-first] Check:', {
                 hasNoMeasurements,
                 measurementCount: base.measurements.size,
@@ -138,11 +277,21 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 adapters: base.adapters,
             });
 
-            if (process.env.NODE_ENV !== 'production') {
+            if (shouldLogMeasureFirst()) {
                 console.log('[measure-first] Generated measurement entries:', {
                     totalEntries: measurementEntries.length,
                     componentCount: base.components.length,
                     entryKeys: measurementEntries.map(e => e.measurementKey),
+                });
+            }
+
+            const requiredKeys = computeRequiredMeasurementKeys(measurementEntries);
+            const missingKeys = computeMissingMeasurementKeys(requiredKeys, base.measurements);
+            if (shouldLogMeasureFirst()) {
+                console.log('[measure-first] Measurement readiness:', {
+                    requiredCount: requiredKeys.size,
+                    missingCount: missingKeys.size,
+                    sampleMissing: Array.from(missingKeys).slice(0, 5),
                 });
             }
 
@@ -152,6 +301,8 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 measurementEntries,
                 waitingForInitialMeasurements: true,
                 allComponentsMeasured: false,
+                requiredMeasurementKeys: requiredKeys,
+                missingMeasurementKeys: missingKeys,
                 isLayoutDirty: false, // Don't trigger pagination yet
             };
         }
@@ -168,7 +319,16 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             adapters: base.adapters,
         });
 
+        const requiredKeys = computeRequiredMeasurementKeys(measurementEntries);
+        const missingKeys = computeMissingMeasurementKeys(requiredKeys, base.measurements);
         const allMeasured = checkAllComponentsMeasured(base.components, base.measurements);
+
+        if (shouldLogMeasureFirst() && missingKeys.size > 0) {
+            console.log('[measure-first] Waiting for remaining measurements:', {
+                missingCount: missingKeys.size,
+                sampleMissing: Array.from(missingKeys).slice(0, 5),
+            });
+        }
 
         return {
             ...base,
@@ -176,6 +336,8 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             measurementEntries,
             waitingForInitialMeasurements: false,
             allComponentsMeasured: allMeasured,
+            requiredMeasurementKeys: requiredKeys,
+            missingMeasurementKeys: missingKeys,
         };
     };
 
@@ -254,18 +416,40 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 isLayoutDirty: true,
             });
         case 'SET_REGION_HEIGHT': {
-            const heightDiff = Math.abs(state.regionHeightPx - action.payload.regionHeightPx);
+            const incomingHeight = action.payload.regionHeightPx;
+            const nextHeight =
+                state.regionHeightPx <= 0 ? incomingHeight : Math.min(state.regionHeightPx, incomingHeight);
+            const heightDiff = Math.abs(state.regionHeightPx - nextHeight);
+
             if (heightDiff < 1) {
+                if (process.env.NODE_ENV !== 'production' && incomingHeight < state.regionHeightPx) {
+                    // eslint-disable-next-line no-console
+                    console.log('[CanvasLayout] Region height ignored (diff too small)', {
+                        previousHeight: state.regionHeightPx,
+                        incomingHeight,
+                    });
+                }
                 return state;
             }
+
             logLayoutDirty('SET_REGION_HEIGHT', {
                 oldHeight: state.regionHeightPx,
-                newHeight: action.payload.regionHeightPx,
-                diff: heightDiff
+                newHeight: nextHeight,
+                incomingHeight,
+                diff: heightDiff,
             });
+            if (process.env.NODE_ENV !== 'production') {
+                // eslint-disable-next-line no-console
+                console.log('[CanvasLayout] Region height updated', {
+                    previousHeight: state.regionHeightPx,
+                    incomingHeight,
+                    nextHeight,
+                    diff: Number(heightDiff.toFixed(2)),
+                });
+            }
             return {
                 ...state,
-                regionHeightPx: action.payload.regionHeightPx,
+                regionHeightPx: nextHeight,
                 isLayoutDirty: true,
             };
         }
@@ -300,7 +484,10 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
 
             const nextVersion = state.measurementVersion + 1;
 
-            // Check if we now have ALL component measurements
+            const requiredKeys = state.requiredMeasurementKeys;
+            const missingKeys = computeMissingMeasurementKeys(requiredKeys, measurements);
+
+            // Check if we now have ALL component block measurements
             const allMeasured = checkAllComponentsMeasured(state.components, measurements);
             const wasWaiting = state.waitingForInitialMeasurements;
             const nowComplete = wasWaiting && allMeasured;
@@ -308,6 +495,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             logLayoutDirty('MEASUREMENTS_UPDATED', {
                 measurementVersion: nextVersion,
                 allComponentsMeasured: allMeasured,
+                missingMeasurementCount: missingKeys.size,
             });
 
             // Update state with new measurements first
@@ -317,6 +505,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 measurementVersion: nextVersion,
                 allComponentsMeasured: allMeasured,
                 waitingForInitialMeasurements: wasWaiting && !allMeasured,
+                missingMeasurementKeys: missingKeys,
             };
 
             // If we just completed initial measurements OR have new measurements, rebuild entries
@@ -373,6 +562,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 measurementVersion: state.measurementVersion,
                 measurements: state.measurements,
                 adapters: state.adapters,
+                segmentRerouteCache: state.segmentRerouteCache,
             });
             // Clear dirty flag immediately to prevent double pagination from effect re-firing
             return { ...state, pendingLayout, isLayoutDirty: false };
@@ -382,6 +572,32 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             const assignedRegions = new Map<string, SlotAssignment>();
 
             if (committedPlan) {
+                if (process.env.NODE_ENV !== 'production') {
+                    const previousPlan = state.layoutPlan;
+                    const previousPageCount = previousPlan?.pages.length ?? 0;
+                    const nextPageCount = committedPlan.pages.length;
+                    const pendingPages = state.pendingLayout?.pages.length ?? null;
+                    // eslint-disable-next-line no-console
+                    console.log('[CanvasLayout] Committed plan', {
+                        previousPageCount,
+                        nextPageCount,
+                        pendingPages,
+                    });
+
+                    const hasPendingPlan = Boolean(state.pendingLayout);
+                    const didPageCountDecrease = previousPageCount > nextPageCount;
+                    const shouldLogSummary = didPageCountDecrease || isDebugEnabled('layout-plan-diff');
+
+                    if (hasPendingPlan && previousPlan && shouldLogSummary) {
+                        const previousSummary = summarizePlanForDebug(previousPlan);
+                        const nextSummary = summarizePlanForDebug(committedPlan);
+                        // eslint-disable-next-line no-console
+                        console.log('[CanvasLayout] Plan diff detail', {
+                            previous: previousSummary,
+                            next: nextSummary,
+                        });
+                    }
+                }
                 committedPlan.pages.forEach((page) => {
                     page.columns.forEach((column) => {
                         column.entries.forEach((entry) => {

@@ -48,6 +48,13 @@ export interface PaginationConfig {
     columnCount: 1 | 2;
 }
 
+export interface PageMargins {
+    topMm: number;
+    bottomMm: number;
+    leftMm?: number;
+    rightMm?: number;
+}
+
 export interface PageVariables {
     mode: PageMode;
     dimensions: PageDimensions;
@@ -55,6 +62,7 @@ export interface PageVariables {
     columns: ColumnConfig;
     pagination: PaginationConfig;
     snap: SnapConfig;
+    margins?: PageMargins;
     templateId?: string;
 }
 

@@ -43,6 +43,7 @@ export { MeasurementLayer, MeasurementCoordinator } from './layout/measurement';
 // Layout Utilities
 export { COMPONENT_VERTICAL_SPACING_PX } from './layout/utils';
 export type { BasePageDimensions } from './layout/utils';
+export { isComponentDebugEnabled } from './layout/paginate';
 
 // Layout Types
 export type {

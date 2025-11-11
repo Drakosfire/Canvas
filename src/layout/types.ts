@@ -6,6 +6,7 @@ import type {
     TemplateConfig,
     RegionListContent,
 } from '../types/canvas.types';
+import type { SegmentRerouteCache } from './segmentTypes';
 
 export type MeasurementKey = string;
 
@@ -58,6 +59,8 @@ export interface LayoutColumn {
     columnNumber: 1 | 2;
     key: string;
     entries: CanvasLayoutEntry[];
+    usedHeightPx?: number;
+    availableHeightPx?: number;
 }
 
 export interface PageLayout {
@@ -146,6 +149,10 @@ export interface CanvasLayoutState {
     // Measure-first flow: explicitly track if we're waiting for initial measurements before pagination
     waitingForInitialMeasurements: boolean;
 
+    // Required measurement coverage for current component/template configuration
+    requiredMeasurementKeys: Set<MeasurementKey>;
+    missingMeasurementKeys: Set<MeasurementKey>;
+
     // Committed placement from last layout plan
     assignedRegions: Map<string, SlotAssignment>;
 
@@ -154,6 +161,7 @@ export interface CanvasLayoutState {
 
     // Adapters for domain-specific operations
     adapters: import('../types/adapters.types').CanvasAdapters;
+    segmentRerouteCache: SegmentRerouteCache;
 }
 
 

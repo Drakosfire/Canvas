@@ -85,13 +85,27 @@ describe('paginate', () => {
         expect(plan.pages[0].columns[0].entries.map((entry) => entry.instance.id)).toEqual(['first', 'second']);
     });
 
-    it('routes block entries to the next column when they overflow', () => {
+    it('routes block entries across columns and advances to a new page when they overflow', () => {
         const tallEntry = createEntry('tall', 900);
         const plan = runPaginate([tallEntry], 2, 600, 1);
-        expect(plan.pages).toHaveLength(1);
-        expect(plan.pages[0].columns[0].entries[0].overflow).toBe(true);
-        expect(plan.pages[0].columns[1].entries[0].instance.id).toBe('tall');
-        expect(plan.pages[0].columns[1].entries[0].overflow).toBe(true);
+        expect(plan.pages).toHaveLength(2);
+
+        const firstPage = plan.pages[0];
+        const secondPage = plan.pages[1];
+
+        const firstColumnEntry = firstPage.columns[0].entries[0];
+        expect(firstColumnEntry.instance.id).toBe('tall');
+        expect(firstColumnEntry.overflow).toBe(true);
+
+        const reroutedEntry = firstPage.columns[1].entries[0];
+        expect(reroutedEntry.instance.id).toBe('tall');
+        expect(reroutedEntry.overflow).toBe(true);
+        expect(reroutedEntry.overflowRouted).toBe(true);
+
+        const nextPageEntry = secondPage.columns[0].entries[0];
+        expect(nextPageEntry.instance.id).toBe('tall');
+        expect(nextPageEntry.overflow).toBe(true);
+        expect(nextPageEntry.overflowRouted).toBe(true);
     });
 
     it('appends a new page when both columns overflow on the first page', () => {
@@ -100,9 +114,15 @@ describe('paginate', () => {
         const plan = runPaginate([entryA, entryB], 2, 600, 1);
         expect(plan.pages).toHaveLength(2);
         expect(plan.pages[0].columns[0].entries[0].instance.id).toBe('A');
-        const secondPageFirstEntry = plan.pages[1].columns[0].entries[0];
-        expect(secondPageFirstEntry.instance.id).toBe('B');
-        expect(secondPageFirstEntry.overflow).toBe(true);
+        expect(plan.pages[0].columns[0].entries[0].overflow).toBe(true);
+        expect(plan.pages[0].columns[1].entries.map((entry) => entry.instance.id)).toEqual(['A']);
+
+        const secondPageEntries = plan.pages[1].columns[0].entries;
+        expect(secondPageEntries.map((entry) => entry.instance.id)).toEqual(['A', 'B']);
+        secondPageEntries.forEach((entry) => {
+            expect(entry.overflow).toBe(true);
+            expect(entry.overflowRouted).toBe(true);
+        });
     });
 
     it('splits list entries across pages and marks continuation metadata', () => {

@@ -27,8 +27,8 @@ export const MM_PER_INCH = 25.4;
 export const MEASUREMENT_TOLERANCE_PX = 0.5;
 export const MEASUREMENT_THROTTLE_MS = 150;
 
-export const DEFAULT_PAGE_TOP_MARGIN_MM = 18;
-export const DEFAULT_PAGE_BOTTOM_MARGIN_MM = 18;
+export const DEFAULT_PAGE_TOP_MARGIN_MM = 10;
+export const DEFAULT_PAGE_BOTTOM_MARGIN_MM = 10;
 export const COMPONENT_VERTICAL_SPACING_PX = 12; // Reduced from 18px for tighter layout
 export const LIST_ITEM_SPACING_PX = 8; // Reduced from 12px for tighter layout
 export const DEFAULT_COMPONENT_HEIGHT_PX = 200;
@@ -63,10 +63,12 @@ export const computeBasePageDimensions = (
     topMarginMm: number = DEFAULT_PAGE_TOP_MARGIN_MM,
     bottomMarginMm: number = DEFAULT_PAGE_BOTTOM_MARGIN_MM
 ): BasePageDimensions => {
+    const effectiveTopMarginMm = pageVariables.margins?.topMm ?? topMarginMm;
+    const effectiveBottomMarginMm = pageVariables.margins?.bottomMm ?? bottomMarginMm;
     const widthPx = convertToPixels(pageVariables.dimensions.width, pageVariables.dimensions.unit);
     const heightPx = convertToPixels(pageVariables.dimensions.height, pageVariables.dimensions.unit);
-    const topMarginPx = convertToPixels(topMarginMm, 'mm');
-    const bottomMarginPx = convertToPixels(bottomMarginMm, 'mm');
+    const topMarginPx = convertToPixels(effectiveTopMarginMm, 'mm');
+    const bottomMarginPx = convertToPixels(effectiveBottomMarginMm, 'mm');
     const contentHeightPx = Math.max(0, heightPx - (topMarginPx + bottomMarginPx));
 
     return {
@@ -98,7 +100,7 @@ export const computeMeasurementKey = (
         return `${instanceId}:block`;
     }
 
-    return `${instanceId}:${regionContent.kind}:${regionContent.startIndex}:${regionContent.items.length}:${regionContent.totalCount}`;
+    return `${instanceId}:${regionContent.kind}:${regionContent.startIndex}:${regionContent.items.length}:${regionContent.totalCount}:${regionContent.isContinuation ? 'cont' : 'base'}`;
 };
 
 export const inferColumnFromPosition = (
@@ -253,6 +255,9 @@ export const buildBuckets = ({
             const summaryMetadata = resolved && typeof resolved === 'object' && !Array.isArray(resolved)
                 ? (resolved as Record<string, unknown>)
                 : undefined;
+            const hasSummaryMetadata = !!summaryMetadata && Object.keys(summaryMetadata).length > 0;
+            const metadataKind = `${listKind}-metadata`;
+            const metadataEntriesAdded = new Set<string>();
 
             segments.forEach((segment, key) => {
                 const [pagePart, columnPart] = key.split(':');
@@ -260,13 +265,50 @@ export const buildBuckets = ({
                 const parsedColumn = Number.parseInt(columnPart, 10);
                 const pageNumber = Number.isNaN(parsedPage) ? baseLocation.page : parsedPage;
                 const columnNumber = Number.isNaN(parsedColumn) ? baseLocation.column : toColumnType(parsedColumn);
+
+                if (hasSummaryMetadata && segment.startIndex === 0 && !metadataEntriesAdded.has(key)) {
+                    const metadataContent = toRegionContent(
+                        metadataKind,
+                        [],
+                        0,
+                        totalCount,
+                        false,
+                        summaryMetadata
+                    );
+                    const metadataMeasurementKey = computeMeasurementKey(instance.id, metadataContent);
+                    const metadataRecord = measurements.get(metadataMeasurementKey);
+                    const metadataEntry: CanvasLayoutEntry = {
+                        instance,
+                        slotIndex,
+                        orderIndex: index - 0.5,
+                        sourceRegionKey: key,
+                        region: {
+                            page: pageNumber,
+                            column: columnNumber,
+                        },
+                        homeRegion: resolvedHome,
+                        homeRegionKey: homeKey,
+                        regionContent: metadataContent,
+                        estimatedHeight: metadataRecord?.height ?? adapters.heightEstimator.estimateComponentHeight(summaryMetadata),
+                        measurementKey: metadataMeasurementKey,
+                        needsMeasurement: !metadataRecord,
+                        span: metadataRecord ? { top: 0, bottom: metadataRecord.height, height: metadataRecord.height } : undefined,
+                        slotDimensions,
+                    };
+                    if (!buckets.has(key)) {
+                        buckets.set(key, []);
+                    }
+                    buckets.get(key)!.push(metadataEntry);
+                    metadataEntriesAdded.add(key);
+                }
+
                 const regionContent = toRegionContent(
                     listKind,
                     segment.items,
                     segment.startIndex,
                     totalCount,
                     segment.startIndex > 0,
-                    segment.startIndex === 0 ? summaryMetadata : undefined
+                    undefined
                 );
                 const measurementKey = computeMeasurementKey(instance.id, regionContent);
                 const record = measurements.get(measurementKey);
@@ -395,17 +437,43 @@ export const createInitialMeasurementEntries = ({
             }
 
             // Generate summary metadata for first-segment measurements
-            // This ensures measurements include the intro paragraph (e.g., legendary actions summary)
             // Adapter is responsible for including metadata in resolved data structure
             const summaryMetadata = resolved && typeof resolved === 'object' && !Array.isArray(resolved)
                 ? (resolved as Record<string, unknown>)
                 : undefined;
+            const hasSummaryMetadata = !!summaryMetadata && Object.keys(summaryMetadata).length > 0;
+            const metadataKind = `${listKind}-metadata`;
+
+            if (hasSummaryMetadata) {
+                const metadataContent = toRegionContent(
+                    metadataKind,
+                    [],
+                    0,
+                    totalCount,
+                    false,
+                    summaryMetadata
+                );
+                const metadataMeasurementKey = computeMeasurementKey(instance.id, metadataContent);
+                entries.push({
+                    instance,
+                    slotIndex,
+                    orderIndex: index - 0.5,
+                    sourceRegionKey: homeKey,
+                    region: homeRegion,
+                    homeRegion,
+                    homeRegionKey: homeKey,
+                    regionContent: metadataContent,
+                    estimatedHeight: adapters.heightEstimator.estimateComponentHeight(summaryMetadata),
+                    measurementKey: metadataMeasurementKey,
+                    needsMeasurement: true,
+                    slotDimensions,
+                });
+            }
 
             // Generate split measurements for each possible split point
             // Example: For 14 spells, generate measurements for 1, 2, 3, ..., 14 items
             // IMPORTANT: Generate ALL splits including the full list (splitAt === totalCount)
             // because pagination needs the full list measurement key (e.g., "component-12:spell-list:0:14:14")
-            // CRITICAL: Include summaryMetadata for first segments (startIndex === 0) to match visible rendering
             for (let splitAt = 1; splitAt <= totalCount; splitAt++) {
                 const items = itemsSource.slice(0, splitAt);
                 const isContinuation = false; // Initial splits are never continuations
@@ -416,7 +484,7 @@ export const createInitialMeasurementEntries = ({
                     0, // startIndex
                     totalCount,
                     isContinuation,
-                    summaryMetadata // Include metadata for accurate measurement
+                    undefined
                 );
 
                 const splitMeasurementKey = computeMeasurementKey(instance.id, regionContent);
