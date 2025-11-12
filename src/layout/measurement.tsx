@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useRef } from 'react';
 import type { MeasurementEntry, MeasurementRecord } from './types';
 import { MEASUREMENT_THROTTLE_MS, regionKey } from './utils';
 import { isDebugEnabled } from './debugFlags';
+import { isComponentDebugEnabled } from './paginate';
 
 /**
  * Measurement semantics
@@ -164,7 +165,16 @@ const logSpellcastingEvent = (
     payload: SpellcastingEventPayload = {},
     { force = false }: { force?: boolean } = {}
 ): void => {
-    if (!shouldLogMeasurements() || !isSpellcastingMeasurementKey(key)) {
+    if (!shouldLogMeasurements()) {
+        return;
+    }
+
+    // Extract component ID and check if it's debug-enabled
+    const componentId = extractComponentId(key);
+    const isDebugComponent = componentId ? isComponentDebugEnabled(componentId) : false;
+
+    // Only log if component is debug-enabled (spellcasting measurements also require component filtering)
+    if (!isDebugComponent) {
         return;
     }
 
@@ -237,12 +247,19 @@ const scheduleFlush = (
 
 const SPELLCASTING_MEASUREMENT_TAG = 'spellcasting-block';
 const SPELLCASTING_REGION_KIND = ':spell-list';
-const DEBUG_COMPONENT_IDS = ['component-12'];
+
+/**
+ * Extract component ID from measurement key
+ * Format: "component-X:block" or "component-X:spell-list:..." or "component-X:..."
+ */
+const extractComponentId = (key: string): string | null => {
+    const match = key.match(/^(component-\d+):/);
+    return match ? match[1] : null;
+};
 
 const isSpellcastingMeasurementKey = (key: string): boolean =>
     key.includes(SPELLCASTING_MEASUREMENT_TAG) ||
-    key.includes(SPELLCASTING_REGION_KIND) ||
-    DEBUG_COMPONENT_IDS.some((id) => key.includes(id));
+    key.includes(SPELLCASTING_REGION_KIND);
 
 export const useIdleMeasurementDispatcher = (
     dispatch: (entries: MeasurementRecord[]) => void
@@ -276,7 +293,11 @@ export const useIdleMeasurementDispatcher = (
 
         if (shouldLogMeasurements()) {
             const deletedKeys = new Set(deletions.map(({ key }) => key));
-            const targeted = combined.filter((entry) => isSpellcastingMeasurementKey(entry.key));
+            // Filter to debug-enabled components only
+            const targeted = combined.filter((entry) => {
+                const componentId = extractComponentId(entry.key);
+                return componentId ? isComponentDebugEnabled(componentId) : false;
+            });
             if (targeted.length > 0) {
                 console.log('🧮 [Measurement][Spellcasting] dispatcher summary', {
                     pendingCount: combined.length,
@@ -400,7 +421,9 @@ class MeasurementObserver {
     lock(): void {
         this.isLocked = true;
 
-        if (process.env.NODE_ENV !== 'production' && isSpellcastingMeasurementKey(this.key)) {
+        const componentId = extractComponentId(this.key);
+        const isDebugComponent = componentId ? isComponentDebugEnabled(componentId) : false;
+        if (process.env.NODE_ENV !== 'production' && isDebugComponent) {
             console.log('🔒 [Measurement][Spellcasting] lock', {
                 key: this.key,
             });
@@ -414,7 +437,9 @@ class MeasurementObserver {
     unlock(): void {
         this.isLocked = false;
 
-        if (process.env.NODE_ENV !== 'production' && isSpellcastingMeasurementKey(this.key)) {
+        const componentId = extractComponentId(this.key);
+        const isDebugComponent = componentId ? isComponentDebugEnabled(componentId) : false;
+        if (process.env.NODE_ENV !== 'production' && isDebugComponent) {
             console.log('🔓 [Measurement][Spellcasting] unlock', {
                 key: this.key,
                 hasPendingMeasurement: this.pendingMeasurement != null,
@@ -458,6 +483,72 @@ class MeasurementObserver {
         const height = rect.height > 0 ? rect.height : 0;
 
         const computed = typeof window !== 'undefined' ? window.getComputedStyle(this.node) : null;
+
+        // Debug: Check width constraints for image components
+        const hasImages = this.node.querySelectorAll('img').length > 0;
+        const componentId = extractComponentId(this.key);
+        const isDebugComponent = componentId ? isComponentDebugEnabled(componentId) : false;
+        
+        // Debug logging for image measurements (always log for debug components, even if warning doesn't fire)
+        if (isDebugComponent && hasImages) {
+            const parent = this.node.parentElement;
+            const parentRect = parent?.getBoundingClientRect();
+            const parentComputed = parent ? window.getComputedStyle(parent) : null;
+            const image = this.node.querySelector('img') as HTMLImageElement | null;
+            
+            // Log width diagnostics for image components
+            console.log('[MeasurementObserver] 🔍 Image measurement diagnostics:', {
+                key: this.key,
+                componentId,
+                height,
+                nodeWidth: rect.width,
+                nodeComputedWidth: computed?.width,
+                nodeMaxWidth: computed?.maxWidth,
+                parentWidth: parentRect?.width,
+                parentComputedWidth: parentComputed?.width,
+                parentMaxWidth: parentComputed?.maxWidth,
+                imageCount: this.node.querySelectorAll('img').length,
+                image: image ? {
+                    naturalWidth: image.naturalWidth,
+                    naturalHeight: image.naturalHeight,
+                    width: image.width,
+                    height: image.height,
+                    computedWidth: window.getComputedStyle(image).width,
+                    computedHeight: window.getComputedStyle(image).height,
+                } : null,
+            });
+        }
+        
+        if (hasImages && height > 500) {
+            const parent = this.node.parentElement;
+            const parentRect = parent?.getBoundingClientRect();
+            const parentComputed = parent ? window.getComputedStyle(parent) : null;
+
+            // Only warn for debug-enabled components
+            if (isDebugComponent) {
+                console.warn('[MeasurementObserver] ⚠️ LARGE IMAGE MEASUREMENT:', {
+                    key: this.key,
+                    componentId,
+                    height,
+                    nodeWidth: rect.width,
+                    nodeComputedWidth: computed?.width,
+                    nodeMaxWidth: computed?.maxWidth,
+                    parentWidth: parentRect?.width,
+                    parentComputedWidth: parentComputed?.width,
+                    parentMaxWidth: parentComputed?.maxWidth,
+                    imageCount: this.node.querySelectorAll('img').length,
+                    images: Array.from(this.node.querySelectorAll('img')).map(img => ({
+                        naturalWidth: img.naturalWidth,
+                        naturalHeight: img.naturalHeight,
+                        width: img.width,
+                        height: img.height,
+                        computedWidth: window.getComputedStyle(img).width,
+                        computedHeight: window.getComputedStyle(img).height,
+                    })),
+                });
+            }
+        }
+
         logSpellcastingEvent(this.key, 'measure', '📏', 'measure', {
             height,
             offsetHeight: this.node.offsetHeight,
@@ -531,7 +622,9 @@ class MeasurementObserver {
                 img.removeEventListener('error', handleImageEvent);
             });
 
-            if (shouldLogMeasurements() && isSpellcastingMeasurementKey(this.key)) {
+            const componentId = extractComponentId(this.key);
+            const isDebugComponent = componentId ? isComponentDebugEnabled(componentId) : false;
+            if (shouldLogMeasurements() && isDebugComponent) {
                 console.log('🧹 [Measurement][Spellcasting] image listeners cleaned', {
                     key: this.key,
                 });
@@ -583,9 +676,10 @@ export interface MeasurementLayerProps {
     renderComponent: (entry: MeasurementEntry) => React.ReactNode;
     onMeasurements: MeasurementDispatcher;
     coordinator?: MeasurementCoordinator; // Phase 1: Optional coordinator for locking
+    measuredColumnWidth?: number | null; // Explicit column width for accurate image scaling
 }
 
-export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, renderComponent, onMeasurements, coordinator }) => {
+export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, renderComponent, onMeasurements, coordinator, measuredColumnWidth }) => {
     const dispatcher = useIdleMeasurementDispatcher((updates) => {
         onMeasurements(updates);
     });
@@ -612,13 +706,17 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, ren
                 return;
             }
 
-            if (isSpellcastingMeasurementKey(key) || DEBUG_COMPONENT_IDS.includes(entry.instance.id)) {
+            const componentId = extractComponentId(key);
+            const isDebugComponent = componentId ? isComponentDebugEnabled(componentId) : false;
+            const isEntryDebugComponent = isComponentDebugEnabled(entry.instance.id);
+
+            if (isDebugComponent || isEntryDebugComponent) {
                 logSpellcastingEvent(key, 'attach', '➕', 'attach', {
                     entryId: entry.instance.id,
                     slotIndex: entry.slotIndex,
                     orderIndex: entry.orderIndex,
                     regionContentKind: entry.regionContent?.kind,
-                }, { force: DEBUG_COMPONENT_IDS.includes(entry.instance.id) && !isSpellcastingMeasurementKey(key) });
+                }, { force: isEntryDebugComponent && !isDebugComponent });
             }
 
             const observer = new MeasurementObserver(key, node, dispatcher);
@@ -650,9 +748,12 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, ren
                     style={{
                         // CRITICAL: Render in flex context to match visible layout
                         // Parent container is already positioned offscreen, so no need for absolute positioning
-                        // Let column width naturally constrain - DO NOT use template slotDimensions.widthPx
-                        // as it may not match actual rendered column width, causing incorrect text wrapping
-                        width: 'auto',
+                        // CRITICAL: Use explicit width when available to ensure accurate image scaling
+                        // Fallback to 100% to inherit from parent if measuredColumnWidth not available yet
+                        // This ensures images (width: 100%) scale to column width, not natural image width
+                        width: measuredColumnWidth ? `${measuredColumnWidth}px` : '100%',
+                        maxWidth: measuredColumnWidth ? `${measuredColumnWidth}px` : '100%', // Prevent expansion beyond parent width
+                        boxSizing: 'border-box', // Include padding/border in width calculation
                         // Natural height - let content determine height
                         // Infinite expansion is detected via computed style checks (flexGrow, height: 100%)
                         height: 'auto',

@@ -21,6 +21,7 @@ export type {
 export {
     buildPageDocument,
     updatePageDataSources,
+    extractCustomData,
 } from './data';
 
 export type {

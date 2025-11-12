@@ -67,16 +67,41 @@ const parseBoolean = (value: unknown): boolean | undefined => {
 };
 
 const readEnvFlag = (channel: DebugChannel): boolean | undefined => {
-    if (typeof process === 'undefined' || typeof process.env === 'undefined') {
-        return undefined;
+    // React Scripts replaces process.env.REACT_APP_* at build time
+    // Must access each env var directly (not through variable) for webpack to replace it
+    let reactAppValue: string | undefined;
+    
+    switch (channel) {
+        case 'paginate-spellcasting':
+            // React Scripts replaces process.env.REACT_APP_* at build time
+            reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_PAGINATE;
+            break;
+        case 'measurement-spellcasting':
+            // React Scripts replaces process.env.REACT_APP_* at build time
+            reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_MEASUREMENT;
+            break;
+        case 'planner-spellcasting':
+            // React Scripts replaces process.env.REACT_APP_* at build time
+            reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_PLANNER;
+            break;
+        case 'layout-dirty':
+            // React Scripts replaces process.env.REACT_APP_* at build time
+            reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_LAYOUT;
+            break;
+        case 'measure-first':
+            // React Scripts replaces process.env.REACT_APP_* at build time
+            reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_MEASURE_FIRST;
+            break;
+        case 'layout-plan-diff':
+            // React Scripts replaces process.env.REACT_APP_* at build time
+            reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_PLAN_DIFF;
+            break;
     }
-
-    // Check REACT_APP_ prefixed vars first (React Scripts exposes these)
-    const reactAppKey = REACT_APP_ENV_VAR_MAP[channel];
-    if (reactAppKey) {
-        const reactAppValue = parseBoolean(process.env[reactAppKey]);
-        if (reactAppValue !== undefined) {
-            return reactAppValue;
+    
+    if (reactAppValue !== undefined) {
+        const parsed = parseBoolean(reactAppValue);
+        if (parsed !== undefined) {
+            return parsed;
         }
     }
 
@@ -86,7 +111,7 @@ const readEnvFlag = (channel: DebugChannel): boolean | undefined => {
         return undefined;
     }
 
-    return parseBoolean(process.env[envKey]);
+    return parseBoolean(typeof process !== 'undefined' && process.env ? process.env[envKey] : undefined);
 };
 
 const readGlobalFlags = (): DebugFlagSource | undefined => {

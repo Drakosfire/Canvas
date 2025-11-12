@@ -52,7 +52,8 @@ if (typeof window !== 'undefined') {
         hasWindow: typeof window !== 'undefined',
         hasProcess: typeof process !== 'undefined',
         NODE_ENV: typeof process !== 'undefined' ? process.env.NODE_ENV : 'browser',
-        REACT_APP_CANVAS_DEBUG_COMPONENTS: typeof process !== 'undefined' && process.env.REACT_APP_CANVAS_DEBUG_COMPONENTS || 'not set',
+        // React Scripts replaces process.env.REACT_APP_* at build time
+        REACT_APP_CANVAS_DEBUG_COMPONENTS: process.env.REACT_APP_CANVAS_DEBUG_COMPONENTS || 'not set',
     });
 }
 
@@ -84,16 +85,14 @@ const parseComponentIdList = (value: unknown): string[] => {
 };
 
 const readComponentIdsFromEnv = (): string[] => {
-    if (typeof process === 'undefined' || typeof process.env === 'undefined') {
-        return [];
-    }
-    // Check REACT_APP_ prefixed var first (React Scripts exposes these)
+    // React Scripts replaces process.env.REACT_APP_* at build time
+    // Access directly - webpack will replace with literal string or undefined
     const reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_COMPONENTS;
     if (reactAppValue) {
         return parseComponentIdList(reactAppValue);
     }
     // Fallback to non-prefixed var (for Node.js/server-side)
-    const envValue = process.env.CANVAS_DEBUG_COMPONENTS;
+    const envValue = typeof process !== 'undefined' && process.env ? process.env.CANVAS_DEBUG_COMPONENTS : undefined;
     return parseComponentIdList(envValue);
 };
 
@@ -160,9 +159,10 @@ if (typeof window !== 'undefined') {
             default: DEFAULT_DEBUG_COMPONENT_IDS.length > 0 ? 'default' : null,
         },
         envVars: {
-            REACT_APP_CANVAS_DEBUG_COMPONENTS: typeof process !== 'undefined' && process.env.REACT_APP_CANVAS_DEBUG_COMPONENTS || 'not set',
-            REACT_APP_CANVAS_DEBUG_PAGINATE: typeof process !== 'undefined' && process.env.REACT_APP_CANVAS_DEBUG_PAGINATE || 'not set',
-            REACT_APP_CANVAS_DEBUG_PLANNER: typeof process !== 'undefined' && process.env.REACT_APP_CANVAS_DEBUG_PLANNER || 'not set',
+            // React Scripts replaces process.env.REACT_APP_* at build time
+            REACT_APP_CANVAS_DEBUG_COMPONENTS: process.env.REACT_APP_CANVAS_DEBUG_COMPONENTS || 'not set',
+            REACT_APP_CANVAS_DEBUG_PAGINATE: process.env.REACT_APP_CANVAS_DEBUG_PAGINATE || 'not set',
+            REACT_APP_CANVAS_DEBUG_PLANNER: process.env.REACT_APP_CANVAS_DEBUG_PLANNER || 'not set',
         },
         diagnostic: {
             DEBUG_COMPONENT_IDS_size: DEBUG_COMPONENT_IDS.size,
@@ -222,6 +222,23 @@ const logPaginationDecision = (...args: unknown[]) => {
     if (!shouldLogPaginationDecisions()) {
         return;
     }
+
+    // Extract componentId from payload if present
+    // Format: logPaginationDecision(runId, 'label', { componentId: ..., ... })
+    let shouldLog = true;
+    if (args.length >= 3 && typeof args[2] === 'object' && args[2] !== null) {
+        const payload = args[2] as { componentId?: string };
+        if (payload.componentId) {
+            // Only log if this component is in the debug list
+            shouldLog = shouldDebugComponent(payload.componentId);
+        }
+    }
+    // For logs without componentId (like 'run-start'), always log if pagination debug is enabled
+
+    if (!shouldLog) {
+        return;
+    }
+
     // eslint-disable-next-line no-console
     console.debug('[paginate]', ...args);
 };
