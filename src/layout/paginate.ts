@@ -41,6 +41,7 @@ interface PaginateArgs {
     measurements: Map<MeasurementKey, MeasurementRecord>;
     adapters: CanvasAdapters;
     segmentRerouteCache?: SegmentRerouteCache;
+    previousPlan?: LayoutPlan | null;
 }
 
 // Diagnostic: Log when module loads (before any other code)
@@ -126,11 +127,36 @@ const buildDebugComponentSet = (): Set<string> => {
 };
 
 const DEBUG_COMPONENT_IDS = buildDebugComponentSet();
+
+/**
+ * Normalize component IDs to zero-padded format for consistent logging.
+ * Examples: "component-0" -> "component-00", "component-1" -> "component-01", "component-10" -> "component-10"
+ */
+const normalizeComponentId = (componentId: string): string => {
+    const match = componentId.match(/^component-(\d+)$/);
+    if (match) {
+        const num = parseInt(match[1], 10);
+        return `component-${num.toString().padStart(2, '0')}`;
+    }
+    return componentId; // Return as-is if not in expected format
+};
+
+/**
+ * Check if a component ID matches a normalized debug component ID.
+ * This allows checking against zero-padded IDs (e.g., "component-01") even if the actual ID is "component-1".
+ */
+const matchesDebugComponent = (componentId: string, debugId: string): boolean => {
+    const normalized = normalizeComponentId(componentId);
+    const normalizedDebug = normalizeComponentId(debugId);
+    return normalized === normalizedDebug;
+};
+
 const isPaginationDebugEnabled = (): boolean => isDebugEnabled('paginate-spellcasting');
 const isPlannerDebugEnabled = (): boolean => isDebugEnabled('planner-spellcasting');
 // Only debug components explicitly specified via CLI/env vars
+// If "*" is in the set, debug all components; otherwise check if component ID is in set
 const shouldDebugComponent = (componentId: string): boolean =>
-    DEBUG_COMPONENT_IDS.has(componentId);
+    DEBUG_COMPONENT_IDS.has('*') || DEBUG_COMPONENT_IDS.has(componentId);
 
 // Export for use in other modules (e.g., StatblockPage.tsx)
 export const isComponentDebugEnabled = (componentId: string): boolean =>
@@ -151,6 +177,7 @@ if (typeof window !== 'undefined') {
     // eslint-disable-next-line no-console
     console.log('🎯 [Canvas Debug] Active configuration:', {
         componentIds: Array.from(DEBUG_COMPONENT_IDS),
+        wildcardEnabled: DEBUG_COMPONENT_IDS.has('*'),
         enabledFlags: enabledFlags.length > 0 ? enabledFlags : ['none'],
         source: {
             env: readComponentIdsFromEnv().length > 0 ? 'env' : null,
@@ -200,6 +227,56 @@ const debugLog = (componentId: string, emoji: string, label: string, payload?: u
 };
 
 let debugRunId = 0;
+
+// Track last pagination inputs to detect duplicate runs
+interface LastPaginationInputs {
+    regionHeightPx: number;
+    columnCount: number;
+    requestedPageCount: number;
+    bucketCount: number;
+    measurementVersion: number | undefined;
+    measurementKeysHash: string; // Hash of measurement keys and heights
+}
+
+let lastPaginationInputs: LastPaginationInputs | null = null;
+
+/**
+ * Create a hash of measurement keys and heights for comparison
+ */
+function hashMeasurements(measurements: Map<MeasurementKey, MeasurementRecord>): string {
+    const entries = Array.from(measurements.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, record]) => `${key}:${record.height.toFixed(2)}`)
+        .join('|');
+    return entries;
+}
+
+/**
+ * Check if pagination inputs are identical to last run
+ */
+function areInputsIdentical(
+    regionHeightPx: number,
+    columnCount: number,
+    requestedPageCount: number,
+    bucketCount: number,
+    measurementVersion: number | undefined,
+    measurements: Map<MeasurementKey, MeasurementRecord>
+): boolean {
+    if (!lastPaginationInputs) {
+        return false;
+    }
+
+    const measurementKeysHash = hashMeasurements(measurements);
+
+    return (
+        Math.abs(lastPaginationInputs.regionHeightPx - regionHeightPx) < 0.01 &&
+        lastPaginationInputs.columnCount === columnCount &&
+        lastPaginationInputs.requestedPageCount === requestedPageCount &&
+        lastPaginationInputs.bucketCount === bucketCount &&
+        lastPaginationInputs.measurementVersion === measurementVersion &&
+        lastPaginationInputs.measurementKeysHash === measurementKeysHash
+    );
+}
 
 const shouldLogPaginationDecisions = (): boolean => isPaginationDebugEnabled();
 
@@ -358,17 +435,37 @@ const createCursor = (regionKey: string, maxHeight: number): RegionCursor => ({
     maxHeight,
 });
 
-const computeSpan = (cursor: RegionCursor, estimatedHeight: number): RegionSpan => ({
-    top: cursor.currentOffset,
-    bottom: cursor.currentOffset + estimatedHeight,
-    height: estimatedHeight,
-});
+const computeSpan = (cursor: RegionCursor, estimatedHeight: number): RegionSpan => {
+    const span: RegionSpan = {
+        top: cursor.currentOffset,
+        bottom: cursor.currentOffset + estimatedHeight,
+        height: estimatedHeight,
+    };
 
-const fitsInRegion = (span: RegionSpan, cursor: RegionCursor): boolean => {
+    return span;
+};
+
+const fitsInRegion = (span: RegionSpan, cursor: RegionCursor, componentId?: string): boolean => {
     // Check if component + spacing buffer fits in region
     // (cursor advances by span.bottom + COMPONENT_VERTICAL_SPACING_PX)
     const cursorAfterPlacement = span.bottom + COMPONENT_VERTICAL_SPACING_PX;
-    return cursorAfterPlacement <= cursor.maxHeight;
+    const fits = cursorAfterPlacement <= cursor.maxHeight;
+
+    // CRITICAL: Log component-5 fitsInRegion checks
+    if (isPaginationDebugEnabled() && componentId && (componentId === 'component-5' || componentId.includes('component-5'))) {
+        debugLog('component-5', '🔍', 'fitsInRegion-check', {
+            spanTop: span.top,
+            spanBottom: span.bottom,
+            spanHeight: span.height,
+            cursorAfterPlacement,
+            cursorMaxHeight: cursor.maxHeight,
+            fits,
+            reason: fits ? 'FITS' : 'OVERFLOWS',
+            overflowAmount: cursorAfterPlacement - cursor.maxHeight,
+        });
+    }
+
+    return fits;
 };
 
 const advanceCursor = (cursor: RegionCursor, span: RegionSpan) => {
@@ -582,6 +679,7 @@ export const paginate = ({
     measurements,
     adapters,
     segmentRerouteCache,
+    previousPlan,
 }: PaginateArgs): LayoutPlan => {
     const runId = ++debugRunId;
     const rerouteCache = segmentRerouteCache ?? new SegmentRerouteCache();
@@ -590,9 +688,63 @@ export const paginate = ({
     // NOTE: regionHeightPx is the measured column height from DOM, which already
     // accounts for all rendered content (headers, etc). We use it directly without adjustment.
 
+    // CRITICAL: Check if inputs are identical to last run
+    // If so, return previousPlan without running pagination (prevents duplicate runs)
+    const bucketCount = buckets.size;
+    const inputsIdentical = areInputsIdentical(
+        regionHeightPx,
+        columnCount,
+        requestedPageCount,
+        bucketCount,
+        measurementVersion,
+        measurements
+    );
+
+    // CRITICAL: Only skip if previousPlan exists AND has pages
+    // If previousPlan is null or empty, we must run pagination to create the plan
+    if (inputsIdentical && previousPlan && previousPlan.pages.length > 0) {
+        if (isPaginationDebugEnabled()) {
+            logPaginationDecision(runId, 'run-skipped-identical-inputs', {
+                regionHeightPx,
+                columnCount,
+                requestedPageCount,
+                bucketCount,
+                measurementVersion: measurementVersion ?? 'unknown',
+                previousPageCount: previousPlan.pages.length,
+                reason: 'All inputs identical to previous run, returning previousPlan',
+            });
+        }
+        // Still update tracking for next comparison
+        lastRegionHeightPx = regionHeightPx;
+        lastNormalizedHeight = regionHeightPx;
+        return previousPlan;
+    }
+
+    // Update last inputs for next comparison
+    const measurementKeysHash = hashMeasurements(measurements);
+    lastPaginationInputs = {
+        regionHeightPx,
+        columnCount,
+        requestedPageCount,
+        bucketCount,
+        measurementVersion,
+        measurementKeysHash,
+    };
+
     // Detect regionHeight changes (feedback loop indicator)
     const regionHeightChanged = lastRegionHeightPx !== null && Math.abs(lastRegionHeightPx - regionHeightPx) > 1;
     const normalizedHeightChanged = lastNormalizedHeight !== null && Math.abs(lastNormalizedHeight - regionHeightPx) > 1;
+
+    // Component-5 region height change logging
+    if (isPaginationDebugEnabled() && shouldDebugComponent('component-5')) {
+        debugLog('component-5', '📏', 'region-height-at-start', {
+            runId,
+            regionHeightPx,
+            previousRegionHeight: lastRegionHeightPx,
+            heightChanged: lastRegionHeightPx !== null && lastRegionHeightPx !== regionHeightPx,
+            heightDiff: lastRegionHeightPx !== null ? regionHeightPx - lastRegionHeightPx : 0,
+        });
+    }
 
     logPaginationDecision(runId, 'run-start', {
         columnCount,
@@ -615,7 +767,29 @@ export const paginate = ({
     lastRegionHeightPx = regionHeightPx;
     lastNormalizedHeight = regionHeightPx;
 
-    const pages: PageLayout[] = [];
+    // Initialize pages from previous plan if available, preserving column.entries for cursor initialization
+    // CRITICAL: Ensure all pages have columnCount columns, even if previousPlan didn't have them all
+    const pages: PageLayout[] = previousPlan?.pages
+        ? previousPlan.pages.map((prevPage) => {
+            const columns: LayoutColumn[] = [];
+            for (let columnIndex = 1; columnIndex <= columnCount; columnIndex += 1) {
+                const key = regionKey(prevPage.pageNumber, columnIndex);
+                const prevColumn = prevPage.columns.find((col) => col.columnNumber === columnIndex);
+
+
+                columns.push({
+                    columnNumber: toColumnType(columnIndex),
+                    key,
+                    entries: prevColumn ? [...prevColumn.entries] : [], // Preserve entries from previous run if they exist
+                });
+
+            }
+            return {
+                pageNumber: prevPage.pageNumber,
+                columns,
+            };
+        })
+        : [];
     const overflowWarnings: OverflowWarning[] = [];
     const pendingQueues = new Map<string, CanvasLayoutEntry[]>();
     const routedInRegion = new Set<string>();
@@ -677,8 +851,68 @@ export const paginate = ({
         for (let columnIndex = 0; columnIndex < page.columns.length; columnIndex += 1) {
             const column = page.columns[columnIndex];
             const key = column.key;
+
+            // Phase 0.5: Region Processing Start Tracking
+            if (isPaginationDebugEnabled() && key === '2:2') {
+                const debugEntries = column.entries.filter(e => shouldDebugComponent(e.instance.id));
+                debugEntries.forEach(debugEntry => {
+                    debugLog(normalizeComponentId(debugEntry.instance.id), '🚀', 'component-trace-region-processing-start', {
+                        componentId: normalizeComponentId(debugEntry.instance.id),
+                        runId,
+                        regionKey: key,
+                        page: page.pageNumber,
+                        column: column.columnNumber,
+                        columnEntriesCount: column.entries.length,
+                        debugComponentInColumnEntries: column.entries.filter(e => e.instance.id === debugEntry.instance.id).length,
+                    });
+                });
+            }
             const sourceEntries = processedBuckets.get(key) ?? [];
             const pendingEntries = getPendingQueue(key);
+
+            // Log pending queue state before processing
+            if (isPaginationDebugEnabled() && pendingEntries.length > 0) {
+                debugLog('pending-queue', '📋', 'pending-queue-processing', {
+                    runId,
+                    regionKey: key,
+                    page: page.pageNumber,
+                    column: column.columnNumber,
+                    pendingCount: pendingEntries.length,
+                    pendingEntries: pendingEntries.map(e => ({
+                        id: e.instance.id,
+                        overflow: e.overflow,
+                        overflowRouted: e.overflowRouted,
+                        sourceRegionKey: e.sourceRegionKey,
+                    })),
+                });
+            }
+
+            // Phase 1: Entry Source Tracking - pendingQueue
+            if (isPaginationDebugEnabled()) {
+                const debugEntries = pendingEntries.filter(e => shouldDebugComponent(e.instance.id));
+                debugEntries.forEach(debugEntry => {
+                    debugLog(normalizeComponentId(debugEntry.instance.id), '🎯', 'component-trace-pending-queue-entry', {
+                        componentId: normalizeComponentId(debugEntry.instance.id),
+                        runId,
+                        regionKey: key,
+                        page: page.pageNumber,
+                        column: column.columnNumber,
+                        source: 'pendingQueue',
+                        pendingCount: pendingEntries.filter(e => e.instance.id === debugEntry.instance.id).length,
+                        entries: pendingEntries.filter(e => e.instance.id === debugEntry.instance.id).map(e => ({
+                            entryRegion: e.region,
+                            entrySpanTop: e.span?.top,
+                            entrySpanBottom: e.span?.bottom,
+                            entryOverflow: e.overflow,
+                            entryOverflowRouted: e.overflowRouted,
+                            sourceRegionKey: e.sourceRegionKey,
+                        })),
+                        columnEntriesCount: column.entries.length,
+                        alreadyInColumnEntries: column.entries.some(e => e.instance.id === debugEntry.instance.id && e.region?.page === page.pageNumber && e.region?.column === column.columnNumber),
+                    });
+                });
+            }
+
             const homeEntries = (homeBuckets.get(key) ?? []).filter((entry) => entry.sourceRegionKey !== key);
             const regionQueue: CanvasLayoutEntry[] = [...pendingEntries, ...sourceEntries];
             const debugQueueEntry = regionQueue.find((entry) => shouldDebugComponent(entry.instance.id));
@@ -715,12 +949,240 @@ export const paginate = ({
 
             pendingQueues.set(key, []);
 
-            const columnEntries: CanvasLayoutEntry[] = [];
+            // CRITICAL FIX: Initialize columnEntries with entries from previousPlan
+            // Otherwise, restored entries are lost when we replace column.entries at the end
+            // This preserves spans from previousPlan for entries that aren't reprocessed
+            // FIX: Filter out entries that overflow the current region height
+            // This handles both region height changes AND measurement height changes
+            // CRITICAL FIX: Deduplicate entries at initialization for THIS region only
+            // Single-instance components should only appear once per region
+            // (Global deduplication happens in findExistingEntry when adding new entries)
+            const seenSingleInstanceInRegion = new Set<string>();
+            const seenListSegmentsInRegion = new Set<string>(); // measurementKey
+            let columnEntries: CanvasLayoutEntry[] = column.entries.filter((entry) => {
+                // Only deduplicate entries that are in THIS region
+                const isInThisRegion = entry.region?.page === page.pageNumber && entry.region?.column === column.columnNumber;
+
+                if (!isInThisRegion) {
+                    // Keep entries from other regions (they'll be handled by their own regions)
+                    return true;
+                }
+
+                // For entries in THIS region, deduplicate:
+                // For list components: deduplicate by measurementKey (same segment shouldn't appear twice in same region)
+                if (entry.regionContent) {
+                    if (seenListSegmentsInRegion.has(entry.measurementKey)) {
+                        return false; // Duplicate list segment in this region
+                    }
+                    seenListSegmentsInRegion.add(entry.measurementKey);
+                    return true;
+                }
+                // For single-instance components: only allow one per region
+                if (seenSingleInstanceInRegion.has(entry.instance.id)) {
+                    return false; // Duplicate single-instance component in this region
+                }
+                seenSingleInstanceInRegion.add(entry.instance.id);
+                return true;
+            });
+            const beforeCount = column.entries.length;
+            columnEntries = columnEntries.filter((entry) => {
+                // Keep entries that are in other regions (they'll be handled by their own regions)
+                if (!entry.region || entry.region.page !== page.pageNumber || entry.region.column !== column.columnNumber) {
+                    return true;
+                }
+                // For entries in this region, check if they overflow the current height
+                if (!entry.span) return false;
+
+                // CRITICAL FIX: Only remove entries if they actually overflow the region
+                // If the measurement layer is working correctly, measurement refinements shouldn't change order
+                // The display layer should just render at the measured height - if it fits, it fits
+                const currentMeasurement = measurements.get(entry.measurementKey);
+                const currentHeight = currentMeasurement?.height ?? entry.span.height;
+                const entryTop = entry.span.top;
+                const entryBottom = entryTop + currentHeight;
+
+                // Only remove if the component actually overflows the region with its current measurement
+                const overflows = entryBottom > regionHeightPx;
+
+                if (overflows) {
+                    if (isPaginationDebugEnabled()) {
+                        logPaginationDecision(runId, 'entry-removed-from-columnEntries-invalid', {
+                            componentId: entry.instance.id,
+                            regionKey: key,
+                            oldSpanBottom: entry.span.bottom,
+                            oldSpanHeight: entry.span.height,
+                            currentMeasurementHeight: currentMeasurement?.height,
+                            calculatedBottom: entryBottom,
+                            newRegionHeight: regionHeightPx,
+                            overflowAmount: entryBottom - regionHeightPx,
+                            reason: 'overflow',
+                        });
+                    }
+                    return false;
+                }
+                return true;
+            });
+            if (beforeCount > columnEntries.length && isPaginationDebugEnabled()) {
+                logPaginationDecision(runId, 'columnEntries-filtered-invalid-entries', {
+                    regionKey: key,
+                    beforeCount,
+                    afterCount: columnEntries.length,
+                    removedCount: beforeCount - columnEntries.length,
+                    regionHeightPx,
+                    previousRegionHeight: lastRegionHeightPx,
+                    heightChanged: regionHeightChanged,
+                });
+            }
+
+            // Fix 1: Helper function to find existing entry in columnEntries to prevent duplication
+            // Strategy: Use measurementKey for list components (includes startIndex, making segments unique)
+            //           Use instance.id for single-instance components (GLOBAL deduplication - only one per component)
+            const findExistingEntry = (entry: CanvasLayoutEntry, columnEntries: CanvasLayoutEntry[], page: number, column: number): number => {
+                return columnEntries.findIndex(
+                    e => {
+                        // For list components, use measurementKey (includes startIndex, making segments unique)
+                        // measurementKey format: `${instanceId}:${kind}:${startIndex}:${items.length}:${totalCount}:${isContinuation ? 'cont' : 'base'}`
+                        // List components CAN exist in multiple regions (different segments)
+                        if (entry.regionContent && e.regionContent) {
+                            // Both are list components - match by measurementKey AND region
+                            // Different segments of same list can exist in different regions
+                            return e.measurementKey === entry.measurementKey &&
+                                e.region?.page === page &&
+                                e.region?.column === column;
+                        }
+
+                        // For single-instance components (no regionContent), use instance.id GLOBALLY
+                        // CRITICAL FIX: Single-instance components should only exist ONCE total
+                        // Don't check region - if component exists anywhere, it's a duplicate
+                        // This prevents the same component from being added to multiple regions
+                        if (!entry.regionContent && !e.regionContent) {
+                            return e.instance.id === entry.instance.id;
+                        }
+
+                        // Mixed case: one is list, one is single-instance - not a match
+                        return false;
+                    }
+                );
+            };
+
+            // Phase 0: Column Entries Initialization Tracking
+            if (isPaginationDebugEnabled()) {
+                const debugEntries = column.entries.filter(e => shouldDebugComponent(e.instance.id));
+                debugEntries.forEach(debugEntry => {
+                    const sameComponentEntries = column.entries.filter(e => e.instance.id === debugEntry.instance.id);
+                    debugLog(normalizeComponentId(debugEntry.instance.id), '🏁', 'component-trace-column-entries-init', {
+                        componentId: normalizeComponentId(debugEntry.instance.id),
+                        runId,
+                        regionKey: key,
+                        page: page.pageNumber,
+                        column: column.columnNumber,
+                        componentCount: sameComponentEntries.length,
+                        componentEntries: sameComponentEntries.map(e => ({
+                            page: e.region?.page,
+                            column: e.region?.column,
+                            spanTop: e.span?.top,
+                            spanBottom: e.span?.bottom,
+                            sourceRegionKey: e.sourceRegionKey,
+                        })),
+                        totalEntriesCount: column.entries.length,
+                        fromPreviousPlan: true,
+                    });
+                });
+            }
             // Use measured column height directly (no normalization needed)
             // The regionHeightPx is ALREADY the measured column height from the DOM,
             // which already accounts for any header space.
             const cursor = createCursor(key, regionHeightPx);
             let safetyCounter = 0;
+
+            // CRITICAL FIX: Initialize cursor from already-placed entries in THIS column
+            // Use columnEntries (filtered from previousPlan) instead of filtering regionQueue,
+            // because regionQueue contains entries ASSIGNED to this region, not entries
+            // ACTUALLY PLACED in this column. Entries may have been moved to other columns.
+            // Note: columnEntries is already filtered to remove overflow entries when height changes
+            const alreadyPlacedEntries = columnEntries.filter(
+                (entry) =>
+                    entry.span &&
+                    entry.region &&
+                    entry.region.page === page.pageNumber &&
+                    entry.region.column === column.columnNumber
+            );
+
+            // Debug: Log cursor initialization attempt
+            if (isPaginationDebugEnabled()) {
+                logPaginationDecision(runId, 'cursor-initialization-attempt', {
+                    regionKey: key,
+                    columnEntriesCount: column.entries.length,
+                    alreadyPlacedCount: alreadyPlacedEntries.length,
+                    sampleEntry: column.entries[0] ? {
+                        id: column.entries[0].instance.id,
+                        hasSpan: !!column.entries[0].span,
+                        hasRegion: !!column.entries[0].region,
+                        regionPage: column.entries[0].region?.page,
+                        regionColumn: column.entries[0].region?.column,
+                        expectedPage: page.pageNumber,
+                        expectedColumn: column.columnNumber,
+                    } : null,
+                });
+            }
+
+            if (alreadyPlacedEntries.length > 0) {
+                // CRITICAL FIX: Sort by visual position (span.bottom) first, not orderIndex
+                // orderIndex reflects array index (component creation order), not visual placement order
+                // Components can be visually placed out of orderIndex sequence, so we must sort by span.bottom
+                // to find the visually last component (highest span.bottom)
+                alreadyPlacedEntries.sort((a, b) => {
+                    const aBottom = a.span?.bottom ?? 0;
+                    const bBottom = b.span?.bottom ?? 0;
+                    if (aBottom !== bBottom) return aBottom - bBottom;
+                    // Tiebreaker: use orderIndex for deterministic sorting when spans are equal
+                    return a.orderIndex - b.orderIndex;
+                });
+                const lastPlacedEntry = alreadyPlacedEntries[alreadyPlacedEntries.length - 1];
+                if (lastPlacedEntry.span) {
+                    // Initialize cursor to bottom of last placed entry + spacing
+                    cursor.currentOffset = lastPlacedEntry.span.bottom + COMPONENT_VERTICAL_SPACING_PX;
+
+                    // FIX: Reset cursor if it exceeds new region height (race condition protection)
+                    // This handles the case where regionHeightPx changed between pagination runs,
+                    // causing cursor from previousPlan to be stale (calculated with old height)
+                    if (cursor.currentOffset > cursor.maxHeight) {
+                        logPaginationDecision(runId, 'cursor-reset-exceeds-height', {
+                            regionKey: key,
+                            oldCursorOffset: cursor.currentOffset,
+                            newRegionHeight: cursor.maxHeight,
+                            heightDiff: cursor.currentOffset - cursor.maxHeight,
+                            lastPlacedSpanBottom: lastPlacedEntry.span.bottom,
+                            reason: 'Cursor from previousPlan exceeds new regionHeightPx (race condition)',
+                        });
+                        cursor.currentOffset = 0;
+                    } else {
+                        logPaginationDecision(runId, 'cursor-initialized-from-column-entries', {
+                            regionKey: key,
+                            alreadyPlacedCount: alreadyPlacedEntries.length,
+                            lastPlacedEntryId: lastPlacedEntry.instance.id,
+                            lastPlacedSpanBottom: lastPlacedEntry.span.bottom,
+                            cursorInitializedTo: cursor.currentOffset,
+                            regionHeightPx,
+                        });
+                    }
+                }
+            } else if (column.entries.length > 0 && isPaginationDebugEnabled()) {
+                // Debug: Why didn't we find already-placed entries?
+                logPaginationDecision(runId, 'cursor-init-failed-no-matches', {
+                    regionKey: key,
+                    columnEntriesCount: column.entries.length,
+                    sampleEntries: column.entries.slice(0, 3).map(e => ({
+                        id: e.instance.id,
+                        hasSpan: !!e.span,
+                        hasRegion: !!e.region,
+                        regionPage: e.region?.page,
+                        regionColumn: e.region?.column,
+                        expectedPage: page.pageNumber,
+                        expectedColumn: column.columnNumber,
+                    })),
+                });
+            }
 
             if (plannerDiagnosticsEnabled) {
                 const segmentDescriptors = regionQueue
@@ -742,10 +1204,133 @@ export const paginate = ({
 
             while (regionQueue.length > 0 && safetyCounter < MAX_REGION_ITERATIONS) {
                 safetyCounter += 1;
+
+                // Peek at next entry without removing it
+                const peekedEntry = regionQueue[0];
+                if (!peekedEntry) {
+                    break;
+                }
+
+                // OPTIMIZATION: Check if entry is already correctly placed before dequeuing
+                // This prevents unnecessary processing and logging for settled components
+                // LOGGING REDUCTION: Skipped entries don't log 'dequeued-entry' or other processing logs
+                // Only entries that need reprocessing will be logged, reducing noise for debugging
+                const alreadyPlacedEntry = columnEntries.find(
+                    (e) => {
+                        // For list components, match by measurementKey AND region
+                        if (peekedEntry.regionContent && e.regionContent) {
+                            return e.measurementKey === peekedEntry.measurementKey &&
+                                e.region?.page === page.pageNumber &&
+                                e.region?.column === column.columnNumber;
+                        }
+                        // For single-instance components, match by instance.id AND region
+                        if (!peekedEntry.regionContent && !e.regionContent) {
+                            return e.instance.id === peekedEntry.instance.id &&
+                                e.region?.page === page.pageNumber &&
+                                e.region?.column === column.columnNumber;
+                        }
+                        return false;
+                    }
+                );
+
+                // Check if entry is already correctly placed and doesn't need reprocessing
+                const isAlreadyCorrectlyPlaced = alreadyPlacedEntry &&
+                    alreadyPlacedEntry.span &&
+                    alreadyPlacedEntry.region &&
+                    alreadyPlacedEntry.region.page === page.pageNumber &&
+                    alreadyPlacedEntry.region.column === column.columnNumber;
+
+                if (isAlreadyCorrectlyPlaced && alreadyPlacedEntry.span) {
+                    // TypeScript guard: span is guaranteed to exist here
+                    const placedSpan = alreadyPlacedEntry.span;
+
+                    // Check if measurements changed (would require reprocessing)
+                    const currentMeasurement = measurements.get(peekedEntry.measurementKey);
+                    const currentHeight = currentMeasurement?.height ?? peekedEntry.estimatedHeight ?? DEFAULT_COMPONENT_HEIGHT_PX;
+                    const storedHeight = placedSpan.height;
+                    const heightChanged = Math.abs(currentHeight - storedHeight) > 0.01;
+
+                    // Check if entry would overflow with current height
+                    const entryTop = placedSpan.top;
+                    const entryBottom = entryTop + currentHeight;
+                    const wouldOverflow = entryBottom > regionHeightPx;
+
+                    // Skip if height hasn't changed AND it doesn't overflow
+                    // CRITICAL FIX: Advance cursor when skipping entries to ensure correct positioning
+                    // Even though cursor is initialized from columnEntries, we need to advance it past
+                    // skipped entries to handle cases where entries are processed out of order or
+                    // cursor initialization doesn't account for all skipped entries
+                    if (!heightChanged && !wouldOverflow) {
+                        // Advance cursor to bottom of skipped entry + spacing
+                        const entryBottomWithSpacing = entryBottom + COMPONENT_VERTICAL_SPACING_PX;
+                        const prevCursorOffset = cursor.currentOffset;
+
+                        // Only advance if skipped entry extends beyond current cursor position
+                        if (entryBottomWithSpacing > cursor.currentOffset) {
+                            cursor.currentOffset = entryBottomWithSpacing;
+
+                            if (isPaginationDebugEnabled() && shouldDebugComponent(peekedEntry.instance.id)) {
+                                debugLog(peekedEntry.instance.id, '🔧', 'cursor-advanced-for-skipped-entry', {
+                                    runId,
+                                    regionKey: key,
+                                    componentId: peekedEntry.instance.id,
+                                    entrySpanBottom: entryBottom,
+                                    cursorBefore: prevCursorOffset,
+                                    cursorAfter: cursor.currentOffset,
+                                    cursorAdvance: cursor.currentOffset - prevCursorOffset,
+                                });
+                            }
+                        }
+
+                        if (isPaginationDebugEnabled() && shouldDebugComponent(peekedEntry.instance.id)) {
+                            debugLog(peekedEntry.instance.id, '⏭️', 'entry-skipped-already-correctly-placed', {
+                                runId,
+                                regionKey: key,
+                                componentId: peekedEntry.instance.id,
+                                spanTop: placedSpan.top,
+                                spanBottom: placedSpan.bottom,
+                                storedHeight,
+                                currentHeight,
+                                heightChanged,
+                                wouldOverflow,
+                                cursorBefore: prevCursorOffset,
+                                cursorAfter: cursor.currentOffset,
+                                reason: 'Entry already correctly placed, measurements unchanged, no overflow',
+                            });
+                        }
+                        // Remove from queue without processing
+                        regionQueue.shift();
+                        continue;
+                    }
+                }
+
+                // Entry needs processing - dequeue it now
                 const entry = regionQueue.shift();
                 if (!entry) {
                     break;
                 }
+
+                // Phase 1: Entry Source Tracking - regionQueue
+                if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    debugLog(normalizeComponentId(entry.instance.id), '🎯', 'component-trace-region-queue-entry', {
+                        componentId: normalizeComponentId(entry.instance.id),
+                        runId,
+                        regionKey: key,
+                        page: page.pageNumber,
+                        column: column.columnNumber,
+                        source: 'regionQueue',
+                        queueIndex: regionQueue.findIndex(e => e.instance.id === entry.instance.id),
+                        entryRegion: entry.region,
+                        entrySpanTop: entry.span?.top,
+                        entrySpanBottom: entry.span?.bottom,
+                        entryOverflow: entry.overflow,
+                        entryOverflowRouted: entry.overflowRouted,
+                        sourceRegionKey: entry.sourceRegionKey,
+                        columnEntriesCount: columnEntries.length,
+                        alreadyInColumnEntries: columnEntries.some(e => e.instance.id === entry.instance.id && e.region?.page === page.pageNumber && e.region?.column === column.columnNumber),
+                    });
+                }
+
                 debugLog(entry.instance.id, '📥', 'dequeued-entry', {
                     runId,
                     regionKey: key,
@@ -758,6 +1343,21 @@ export const paginate = ({
                     cursorOffset: cursor.currentOffset,
                 });
 
+                // Component-5/6 specific dequeued logging
+                if (isPaginationDebugEnabled() && (entry.instance.id === 'component-5' || entry.instance.id === 'component-6')) {
+                    debugLog(entry.instance.id, '🎯', `${entry.instance.id}-dequeued`, {
+                        runId,
+                        regionKey: key,
+                        cursorOffset: cursor.currentOffset,
+                        cursorMaxHeight: cursor.maxHeight,
+                        regionHeightPx,
+                        entryHeight: entry.estimatedHeight,
+                        measurementKey: entry.measurementKey,
+                        hasMeasurement: measurements.has(entry.measurementKey),
+                        measurementHeight: measurements.get(entry.measurementKey)?.height,
+                    });
+                }
+
                 if (safetyCounter >= MAX_REGION_ITERATIONS) {
                     logPaginationDecision(runId, 'safety-cap-hit', {
                         regionKey: key,
@@ -767,9 +1367,626 @@ export const paginate = ({
 
                 detachFromSource(entry, key, processedBuckets);
 
-                const estimatedHeight = entry.estimatedHeight ?? DEFAULT_COMPONENT_HEIGHT_PX;
+                // Phase 1.5: Track entry before conditional check
+                if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    debugLog(normalizeComponentId(entry.instance.id), '🔍', 'component-trace-before-conditional-check', {
+                        componentId: normalizeComponentId(entry.instance.id),
+                        runId,
+                        regionKey: key,
+                        page: page.pageNumber,
+                        column: column.columnNumber,
+                        hasSpan: !!entry.span,
+                        hasRegion: !!entry.region,
+                        entryRegionPage: entry.region?.page,
+                        entryRegionColumn: entry.region?.column,
+                        targetPage: page.pageNumber,
+                        targetColumn: column.columnNumber,
+                        willEnterConditional: !!(entry.span && entry.region && entry.region.page === page.pageNumber && entry.region.column === column.columnNumber),
+                    });
+                }
+
+                // Fix 2: Check if entry is already in columnEntries before conditional check
+                // This prevents bypass of conditional check when entry loses span but still exists in columnEntries
+                // Use same logic as findExistingEntry: measurementKey for list components, instance.id for single-instance (GLOBAL)
+                const alreadyInColumnEntries = columnEntries.some(
+                    e => {
+                        // For list components, use measurementKey AND region (segments can exist in multiple regions)
+                        if (entry.regionContent && e.regionContent) {
+                            return e.measurementKey === entry.measurementKey &&
+                                e.region?.page === page.pageNumber &&
+                                e.region?.column === column.columnNumber;
+                        }
+
+                        // For single-instance components (no regionContent), use instance.id GLOBALLY
+                        // CRITICAL FIX: Single-instance components should only exist ONCE total
+                        if (!entry.regionContent && !e.regionContent) {
+                            return e.instance.id === entry.instance.id;
+                        }
+
+                        // Mixed case: one is list, one is single-instance - not a match
+                        return false;
+                    }
+                );
+
+                // Skip entries that already have a valid span for this region
+                // This prevents re-processing entries from previous pagination runs
+                if (entry.span && entry.region && entry.region.page === page.pageNumber && entry.region.column === column.columnNumber) {
+                    // Entry already placed - process overflow/routing logic
+                    // Entry already placed in this region - check if it overflows
+                    const prevCursorOffset = cursor.currentOffset;
+
+                    // CRITICAL FIX: Look up placed entry from columnEntries first (entries already processed),
+                    // then fallback to column.entries (entries from previousPlan)
+                    // This prevents duplication when entries are processed multiple times
+                    const placedEntryInColumnEntries = columnEntries.find(
+                        (e) => e.instance.id === entry.instance.id &&
+                            e.region?.page === page.pageNumber &&
+                            e.region?.column === column.columnNumber
+                    );
+
+                    // Fallback to column.entries (entries from previousPlan)
+                    const placedEntryFromPrevious = column.entries.find(
+                        (e) => e.instance.id === entry.instance.id &&
+                            e.region?.page === page.pageNumber &&
+                            e.region?.column === column.columnNumber
+                    );
+
+                    const placedEntry = placedEntryInColumnEntries ?? placedEntryFromPrevious;
+                    const actualSpan = placedEntry?.span ?? entry.span;
+
+                    // CRITICAL: If actualSpan.top is 0, this means the entry was placed with span.top = 0
+                    // This should NOT happen - entries should have non-zero top when placed
+                    // For overflow detection, we need the ACTUAL top position, not 0
+                    // If span.top is 0, we can't reliably detect overflow
+                    const entryTop = actualSpan.top || 0; // Use 0 as fallback, but this is a bug indicator
+
+                    // Phase 2: PlacedEntry Lookup Tracking
+                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        debugLog(normalizeComponentId(entry.instance.id), '🔍', 'component-trace-placed-entry-lookup', {
+                            componentId: normalizeComponentId(entry.instance.id),
+                            runId,
+                            regionKey: key,
+                            page: page.pageNumber,
+                            column: column.columnNumber,
+                            foundInColumnEntries: !!placedEntryInColumnEntries,
+                            foundInPrevious: !!placedEntryFromPrevious,
+                            placedEntryFound: !!placedEntry,
+                            placedEntryRegion: placedEntry?.region,
+                            placedEntrySpanTop: placedEntry?.span?.top,
+                            placedEntrySpanBottom: placedEntry?.span?.bottom,
+                            actualSpanTop: actualSpan.top,
+                            actualSpanBottom: actualSpan.bottom,
+                            entryTop,
+                            // Check columnEntries for this component
+                            componentInColumnEntries: columnEntries.filter(e => e.instance.id === entry.instance.id).map(e => ({
+                                page: e.region?.page,
+                                column: e.region?.column,
+                                spanTop: e.span?.top,
+                                spanBottom: e.span?.bottom,
+                            })),
+                            // Check column.entries for this component
+                            componentInPreviousEntries: column.entries.filter(e => e.instance.id === entry.instance.id).map(e => ({
+                                page: e.region?.page,
+                                column: e.region?.column,
+                                spanTop: e.span?.top,
+                                spanBottom: e.span?.bottom,
+                            })),
+                        });
+                    }
+
+                    // Debug: Log what we found in column.entries
+                    if (isPaginationDebugEnabled()) {
+                        debugLog(entry.instance.id, '🔍', 'found-placed-entry', {
+                            runId,
+                            regionKey: key,
+                            foundInColumnEntries: !!placedEntryInColumnEntries,
+                            foundInPrevious: !!placedEntryFromPrevious,
+                            found: !!placedEntry,
+                            placedEntrySpanTop: placedEntry?.span?.top,
+                            placedEntrySpanBottom: placedEntry?.span?.bottom,
+                            entrySpanTop: entry.span?.top,
+                            entrySpanBottom: entry.span?.bottom,
+                            actualSpanTop: actualSpan.top,
+                            actualSpanBottom: actualSpan.bottom,
+                            entryTop, // The value we'll use for overflow detection
+                            cursorOffset: cursor.currentOffset,
+                            columnEntriesCount: column.entries.length,
+                            columnEntriesSpans: column.entries.slice(0, 5).map(e => ({
+                                id: e.instance.id,
+                                spanTop: e.span?.top,
+                                spanBottom: e.span?.bottom,
+                                spanHeight: e.span?.height,
+                                regionPage: e.region?.page,
+                                regionColumn: e.region?.column,
+                            })),
+                            // CRITICAL DEBUG: Check if ALL entries have span.top = 0
+                            allEntriesHaveZeroTop: column.entries.every(e => !e.span || e.span.top === 0),
+                            entriesWithZeroTop: column.entries.filter(e => !e.span || e.span.top === 0).length,
+                            entriesWithNonZeroTop: column.entries.filter(e => e.span && e.span.top !== 0).length,
+                            // WARNING: If entryTop is 0, overflow detection will be wrong
+                            entryTopIsZero: entryTop === 0,
+                        });
+                    }
+
+                    // CRITICAL: Use CURRENT measured height, not stored span.bottom
+                    // The stored span might be outdated if measurements changed
+                    const currentMeasurement = measurements.get(entry.measurementKey);
+                    const currentHeight = currentMeasurement?.height ?? actualSpan.height ?? entry.estimatedHeight ?? DEFAULT_COMPONENT_HEIGHT_PX;
+                    // entryTop is set above (line ~980) from actualSpan.top
+                    // If entryTop is 0, this is a bug - entries should have non-zero top when placed
+
+                    // Recalculate bottom using current height (measurements may have changed)
+                    // This ensures we detect overflow even if the entry's height increased
+                    const entryBottom = entryTop + currentHeight;
+                    const entryBottomWithSpacing = entryBottom + COMPONENT_VERTICAL_SPACING_PX;
+
+                    // CRITICAL: Check if already-placed entry overflows its region
+                    // Use the RECALCULATED bottom (with current height) to detect overflow
+                    // This catches cases where measurements changed and the entry now overflows
+                    const entryOverflows = entryBottom > regionHeightPx;
+
+                    // Detailed overflow detection logging
+                    if (isPaginationDebugEnabled()) {
+                        const rawOverflowAmount = entryBottom - regionHeightPx;
+                        // overflowAmount: positive = overflow, negative = fits, zero = exactly fits
+                        debugLog(entry.instance.id, '🔍', 'overflow-check', {
+                            runId,
+                            regionKey: key,
+                            entryTop,
+                            entryBottom,
+                            entryBottomWithSpacing,
+                            regionHeightPx,
+                            entryOverflows,
+                            overflowAmount: rawOverflowAmount, // positive = overflow, negative = fits
+                            overflowAmountInterpretation: rawOverflowAmount > 0 ? 'OVERFLOWS' : rawOverflowAmount < 0 ? 'FITS' : 'EXACTLY_FITS',
+                            cursorOffset: cursor.currentOffset,
+                            currentHeight,
+                            actualSpanHeight: actualSpan.height,
+                            // WARNING: If entryTop is 0, overflow detection is unreliable
+                            entryTopIsZero: entryTop === 0,
+                            warning: entryTop === 0 ? 'entryTop is 0 - overflow detection may be incorrect!' : undefined,
+                        });
+                    }
+
+                    if (entryOverflows && !entry.overflowRouted) {
+                        // Entry overflows - route to next region
+                        const nextRegion = findNextRegion(pages, key);
+
+                        if (isPaginationDebugEnabled()) {
+                            debugLog(entry.instance.id, '🔀', 'routing-attempt', {
+                                runId,
+                                currentRegion: key,
+                                currentPage: page.pageNumber,
+                                currentColumn: column.columnNumber,
+                                nextRegion: nextRegion?.key,
+                                nextPage: nextRegion?.pageNumber,
+                                nextColumn: nextRegion?.columnNumber,
+                                routeKey: nextRegion ? `${entry.instance.id}:${nextRegion.key}` : null,
+                                alreadyRouted: nextRegion ? routedInRegion.has(`${entry.instance.id}:${nextRegion.key}`) : false,
+                            });
+                        }
+
+                        if (nextRegion && ensurePage(pages, nextRegion.pageNumber, columnCount, pendingQueues)) {
+                            const routeKey = `${entry.instance.id}:${nextRegion.key}`;
+                            if (!routedInRegion.has(routeKey)) {
+                                const followUp: CanvasLayoutEntry = {
+                                    ...entry,
+                                    region: {
+                                        page: nextRegion.pageNumber,
+                                        column: nextRegion.columnNumber,
+                                    },
+                                    span: undefined, // Clear span so it gets recomputed in new region
+                                    overflow: true,
+                                    overflowRouted: true,
+                                    sourceRegionKey: nextRegion.key,
+                                };
+
+                                const pendingQueue = getPendingQueue(nextRegion.key);
+                                pendingQueue.push(followUp);
+                                routedInRegion.add(routeKey);
+
+                                debugLog(entry.instance.id, '➡️', 'route-overflow-enqueued-from-already-placed', {
+                                    runId,
+                                    from: key,
+                                    to: nextRegion.key,
+                                    targetPage: nextRegion.pageNumber,
+                                    targetColumn: nextRegion.columnNumber,
+                                    entryTop,
+                                    entryBottom,
+                                    currentHeight,
+                                    storedSpanBottom: actualSpan.bottom,
+                                    queueEntrySpanTop: entry.span.top, // Debug: show queue entry's incorrect span.top
+                                    regionHeightPx,
+                                    overflowAmount: entryBottom - regionHeightPx,
+                                    pendingCount: pendingQueue.length,
+                                });
+
+                                logPaginationDecision(runId, 'entry-reroute-overflow-already-placed', {
+                                    componentId: entry.instance.id,
+                                    from: key,
+                                    to: nextRegion.key,
+                                    entryTop,
+                                    entryBottom,
+                                    currentHeight,
+                                    storedSpanBottom: actualSpan.bottom,
+                                    queueEntrySpanTop: entry.span.top, // Debug: show queue entry's incorrect span.top
+                                    regionHeightPx,
+                                    overflowAmount: entryBottom - regionHeightPx,
+                                });
+
+                                // Don't add to columnEntries - it's being routed away
+                                continue;
+                            } else {
+                                // Entry already routed to this region
+                                if (isPaginationDebugEnabled()) {
+                                    debugLog(entry.instance.id, '⚠️', 'routing-already-routed', {
+                                        runId,
+                                        targetRegion: nextRegion.key,
+                                        routeKey,
+                                    });
+                                }
+                            }
+                        } else {
+                            // Routing failed - nextRegion is null or ensurePage failed
+                            if (isPaginationDebugEnabled()) {
+                                debugLog(entry.instance.id, '❌', 'routing-failed', {
+                                    runId,
+                                    nextRegionFound: !!nextRegion,
+                                    nextRegionKey: nextRegion?.key,
+                                    nextPageNumber: nextRegion?.pageNumber,
+                                    // Note: ensurePage was called in the if condition above
+                                    // If nextRegion exists but we're here, ensurePage returned false
+                                });
+                            }
+                        }
+                    }
+
+                    // Entry fits or couldn't be routed - keep it and advance cursor
+                    // CRITICAL: Advance cursor to account for this already-placed entry
+                    // Otherwise, subsequent entries will be placed at incorrect positions
+                    if (entryBottomWithSpacing > cursor.currentOffset) {
+                        cursor.currentOffset = entryBottomWithSpacing;
+                        debugLog(entry.instance.id, '🔧', 'cursor-advanced-for-skipped-entry', {
+                            runId,
+                            regionKey: key,
+                            entrySpanBottom: entryBottom,
+                            cursorBefore: prevCursorOffset,
+                            cursorAfter: cursor.currentOffset,
+                            cursorAdvance: cursor.currentOffset - prevCursorOffset,
+                        });
+                    }
+
+                    // CRITICAL FIX: Update or add entry to columnEntries
+                    // Search by instance.id AND region to handle cross-column entries correctly
+                    // Use entry.instance.id (the entry being processed) not placedEntry.instance.id
+
+                    // Phase 3: ExistingIndex Search Tracking - Before search
+                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        // Log state BEFORE search
+                        const componentBeforeSearch = columnEntries.filter(e => e.instance.id === entry.instance.id);
+                        debugLog(normalizeComponentId(entry.instance.id), '🔎', 'component-trace-before-existing-index-search', {
+                            componentId: normalizeComponentId(entry.instance.id),
+                            runId,
+                            regionKey: key,
+                            page: page.pageNumber,
+                            column: column.columnNumber,
+                            componentCount: componentBeforeSearch.length,
+                            componentEntries: componentBeforeSearch.map(e => ({
+                                page: e.region?.page,
+                                column: e.region?.column,
+                                spanTop: e.span?.top,
+                                spanBottom: e.span?.bottom,
+                            })),
+                            searchCriteria: {
+                                instanceId: entry.instance.id,
+                                targetPage: page.pageNumber,
+                                targetColumn: column.columnNumber,
+                            },
+                        });
+                    }
+
+                    const existingIndex = columnEntries.findIndex(
+                        e => e.instance.id === entry.instance.id &&
+                            e.region?.page === page.pageNumber &&
+                            e.region?.column === column.columnNumber
+                    );
+
+                    // Phase 3: ExistingIndex Search Tracking - After search
+                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        debugLog(normalizeComponentId(entry.instance.id), '🔎', 'component-trace-existing-index-result', {
+                            componentId: normalizeComponentId(entry.instance.id),
+                            runId,
+                            regionKey: key,
+                            page: page.pageNumber,
+                            column: column.columnNumber,
+                            existingIndex,
+                            found: existingIndex >= 0,
+                            // Show what the search found
+                            foundEntry: existingIndex >= 0 ? {
+                                page: columnEntries[existingIndex].region?.page,
+                                column: columnEntries[existingIndex].region?.column,
+                                spanTop: columnEntries[existingIndex].span?.top,
+                                spanBottom: columnEntries[existingIndex].span?.bottom,
+                            } : null,
+                            // Show all entries for this component in columnEntries
+                            allComponentEntries: columnEntries
+                                .map((e, idx) => ({ idx, entry: e }))
+                                .filter(({ entry: e }) => e.instance.id === entry.instance.id)
+                                .map(({ idx, entry: e }) => ({
+                                    index: idx,
+                                    page: e.region?.page,
+                                    column: e.region?.column,
+                                    spanTop: e.span?.top,
+                                    spanBottom: e.span?.bottom,
+                                    matchesSearch: e.instance.id === entry.instance.id &&
+                                        e.region?.page === page.pageNumber &&
+                                        e.region?.column === column.columnNumber,
+                                })),
+                        });
+                    }
+
+                    if (existingIndex >= 0) {
+                        // Phase 4: Update/Add Tracking - Update branch
+                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                            debugLog(normalizeComponentId(entry.instance.id), '✏️', 'component-trace-updating-entry', {
+                                componentId: normalizeComponentId(entry.instance.id),
+                                runId,
+                                regionKey: key,
+                                page: page.pageNumber,
+                                column: column.columnNumber,
+                                existingIndex,
+                                beforeUpdate: {
+                                    page: columnEntries[existingIndex].region?.page,
+                                    column: columnEntries[existingIndex].region?.column,
+                                    spanTop: columnEntries[existingIndex].span?.top,
+                                    spanBottom: columnEntries[existingIndex].span?.bottom,
+                                },
+                                afterUpdate: {
+                                    page: page.pageNumber,
+                                    column: column.columnNumber,
+                                    spanTop: actualSpan.top,
+                                    spanBottom: actualSpan.bottom,
+                                },
+                                componentCountBefore: columnEntries.filter(e => e.instance.id === entry.instance.id).length,
+                            });
+                        }
+
+                        // Update existing entry with current span (preserves span.top from previousPlan)
+                        columnEntries[existingIndex] = {
+                            ...columnEntries[existingIndex],
+                            span: actualSpan, // Use actualSpan which preserves span.top from placedEntry
+                        };
+                    } else {
+                        // Phase 4: Update/Add Tracking - Add branch
+                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                            debugLog(normalizeComponentId(entry.instance.id), '➕', 'component-trace-adding-entry', {
+                                componentId: normalizeComponentId(entry.instance.id),
+                                runId,
+                                regionKey: key,
+                                page: page.pageNumber,
+                                column: column.columnNumber,
+                                existingIndex,
+                                whyNotFound: 'existingIndex search returned -1',
+                                componentCountBefore: columnEntries.filter(e => e.instance.id === entry.instance.id).length,
+                                entryToAdd: {
+                                    page: page.pageNumber,
+                                    column: column.columnNumber,
+                                    spanTop: actualSpan.top,
+                                    spanBottom: actualSpan.bottom,
+                                    fromPlacedEntry: !!placedEntry,
+                                    placedEntryRegion: placedEntry?.region,
+                                },
+                                // Check if this component already exists with different region
+                                componentWithDifferentRegion: columnEntries
+                                    .filter(e => e.instance.id === entry.instance.id)
+                                    .map(e => ({
+                                        page: e.region?.page,
+                                        column: e.region?.column,
+                                        spanTop: e.span?.top,
+                                        spanBottom: e.span?.bottom,
+                                    })),
+                            });
+                        }
+
+                        // Entry not found in columnEntries - add it
+                        // Use placedEntry if available (has correct span from previousPlan),
+                        // otherwise use entry with actualSpan
+                        const entryToAdd = placedEntry
+                            ? { ...placedEntry, span: actualSpan }
+                            : { ...entry, span: actualSpan };
+
+                        // Fix 1: Check for duplicate before adding (Path 1: Already-placed entry add branch)
+                        // Note: This path already has existingIndex check above, but this is a safety net
+                        const existingIndexPath1Add = findExistingEntry(entry, columnEntries, page.pageNumber, column.columnNumber);
+                        if (existingIndexPath1Add >= 0) {
+                            // Update existing entry instead of adding duplicate
+                            columnEntries[existingIndexPath1Add] = {
+                                ...columnEntries[existingIndexPath1Add],
+                                span: entryToAdd.span,
+                            };
+                            if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                                debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path1-add', {
+                                    componentId: normalizeComponentId(entry.instance.id),
+                                    runId,
+                                    regionKey: key,
+                                    page: page.pageNumber,
+                                    column: column.columnNumber,
+                                    existingIndex: existingIndexPath1Add,
+                                });
+                            }
+                        } else {
+                            columnEntries.push(entryToAdd);
+                        }
+                    }
+
+                    // Phase 4: Update/Add Tracking - After update/add
+                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        const componentAfter = columnEntries.filter(e => e.instance.id === entry.instance.id);
+                        debugLog(normalizeComponentId(entry.instance.id), '📊', 'component-trace-after-update-add', {
+                            componentId: normalizeComponentId(entry.instance.id),
+                            runId,
+                            regionKey: key,
+                            page: page.pageNumber,
+                            column: column.columnNumber,
+                            componentCount: componentAfter.length,
+                            componentEntries: componentAfter.map(e => ({
+                                page: e.region?.page,
+                                column: e.region?.column,
+                                spanTop: e.span?.top,
+                                spanBottom: e.span?.bottom,
+                            })),
+                            hasDuplicates: componentAfter.length > 1,
+                            duplicatesInSameRegion: componentAfter.filter(e =>
+                                e.region?.page === page.pageNumber &&
+                                e.region?.column === column.columnNumber
+                            ).length,
+                        });
+                    }
+
+                    // Detect duplicates after update/add
+                    if (isPaginationDebugEnabled()) {
+                        const duplicateEntries = columnEntries.filter(
+                            e => e.instance.id === entry.instance.id
+                        );
+                        if (duplicateEntries.length > 1) {
+                            console.warn('⚠️ [DUPLICATE] Entry found multiple times in columnEntries:', {
+                                componentId: entry.instance.id,
+                                duplicateCount: duplicateEntries.length,
+                                locations: duplicateEntries.map(e => ({
+                                    page: e.region?.page,
+                                    column: e.region?.column,
+                                    spanTop: e.span?.top,
+                                })),
+                                currentRegion: key,
+                                placedEntryFound: !!placedEntry,
+                                existingIndexFound: existingIndex >= 0,
+                            });
+                        }
+
+                        // Phase 5: Duplication Detection Tracking
+                        if (shouldDebugComponent(entry.instance.id)) {
+                            const componentDuplicates = columnEntries.filter(e => e.instance.id === entry.instance.id);
+                            if (componentDuplicates.length > 1) {
+                                debugLog(normalizeComponentId(entry.instance.id), '⚠️', 'component-trace-duplicate-detected', {
+                                    componentId: normalizeComponentId(entry.instance.id),
+                                    runId,
+                                    regionKey: key,
+                                    page: page.pageNumber,
+                                    column: column.columnNumber,
+                                    duplicateCount: componentDuplicates.length,
+                                    duplicates: componentDuplicates.map((e, idx) => ({
+                                        index: idx,
+                                        page: e.region?.page,
+                                        column: e.region?.column,
+                                        spanTop: e.span?.top,
+                                        spanBottom: e.span?.bottom,
+                                        isInTargetRegion: e.region?.page === page.pageNumber && e.region?.column === column.columnNumber,
+                                    })),
+                                    duplicatesInTargetRegion: componentDuplicates.filter(e =>
+                                        e.region?.page === page.pageNumber &&
+                                        e.region?.column === column.columnNumber
+                                    ).length,
+                                    placedEntryFound: !!placedEntry,
+                                    existingIndexFound: existingIndex >= 0,
+                                    // Show when each duplicate was added (approximate)
+                                    columnEntriesIndices: columnEntries
+                                        .map((e, idx) => ({ idx, entry: e }))
+                                        .filter(({ entry: e }) => e.instance.id === entry.instance.id)
+                                        .map(({ idx }) => idx),
+                                });
+                            }
+                        }
+                    }
+
+                    // Get the entry that was added/updated for logging
+                    const finalEntry = placedEntry
+                        ? columnEntries.find(
+                            e => e.instance.id === placedEntry.instance.id &&
+                                e.region?.page === page.pageNumber &&
+                                e.region?.column === column.columnNumber
+                        ) ?? placedEntry
+                        : columnEntries[columnEntries.length - 1]; // Last added entry
+
+                    logPaginationDecision(runId, 'entry-skip-already-placed', {
+                        componentId: entry.instance.id,
+                        regionKey: key,
+                        existingSpan: entry.span,
+                        usedPlacedEntry: !!placedEntry,
+                        addedEntrySpanTop: finalEntry?.span?.top,
+                        addedEntrySpanBottom: finalEntry?.span?.bottom,
+                        actualSpan: actualSpan,
+                        existingRegion: entry.region,
+                        entryTop,
+                        entryBottom,
+                        currentHeight,
+                        storedSpanBottom: actualSpan.bottom,
+                        queueEntrySpanTop: entry.span.top, // Debug: show queue entry's incorrect span.top
+                        regionHeightPx,
+                        cursorBefore: prevCursorOffset,
+                        cursorAfter: cursor.currentOffset,
+                        cursorAdvanced: cursor.currentOffset > prevCursorOffset,
+                        overflows: entryOverflows,
+                        overflowAmount: entryOverflows ? entryBottom - regionHeightPx : 0,
+                    });
+                    continue;
+                }
+
+                // Fix 2: Skip entry if already in columnEntries but doesn't match conditional check
+                // This prevents duplicate processing when entry loses span but still exists in columnEntries
+                if (alreadyInColumnEntries && !(entry.span && entry.region && entry.region.page === page.pageNumber && entry.region.column === column.columnNumber)) {
+                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        debugLog(normalizeComponentId(entry.instance.id), '⏭️', 'component-trace-skipped-already-in-column-entries', {
+                            componentId: normalizeComponentId(entry.instance.id),
+                            runId,
+                            regionKey: key,
+                            page: page.pageNumber,
+                            column: column.columnNumber,
+                            reason: 'Entry already in columnEntries but conditional check failed (span missing or region mismatch)',
+                        });
+                    }
+                    continue;
+                }
+
+                // Use measurement height if available, otherwise fall back to estimatedHeight
+                const measurement = measurements.get(entry.measurementKey);
+                const estimatedHeight = measurement?.height ?? entry.estimatedHeight ?? DEFAULT_COMPONENT_HEIGHT_PX;
                 const span = computeSpan(cursor, estimatedHeight);
-                const fits = fitsInRegion(span, cursor);
+
+                // Component-5 span calculation logging
+                if (isPaginationDebugEnabled() && entry.instance.id === 'component-5') {
+                    debugLog('component-5', '📐', 'span-calculation', {
+                        runId,
+                        regionKey: key,
+                        cursorOffset: cursor.currentOffset,
+                        estimatedHeight,
+                        spanTop: span.top,
+                        spanBottom: span.bottom,
+                        spanHeight: span.height,
+                        cursorAfterAdvance: span.bottom + COMPONENT_VERTICAL_SPACING_PX,
+                        regionHeightPx: cursor.maxHeight,
+                        willFit: (span.bottom + COMPONENT_VERTICAL_SPACING_PX) <= cursor.maxHeight,
+                    });
+                }
+
+                // Component-6 span calculation logging
+                if (isPaginationDebugEnabled() && entry.instance.id === 'component-6') {
+                    debugLog('component-6', '📐', 'span-calculation', {
+                        runId,
+                        regionKey: key,
+                        cursorOffset: cursor.currentOffset,
+                        estimatedHeight,
+                        spanTop: span.top,
+                        spanBottom: span.bottom,
+                        spanHeight: span.height,
+                        cursorAfterAdvance: span.bottom + COMPONENT_VERTICAL_SPACING_PX,
+                        regionHeightPx: cursor.maxHeight,
+                        willFit: (span.bottom + COMPONENT_VERTICAL_SPACING_PX) <= cursor.maxHeight,
+                        previousEntryId: columnEntries[columnEntries.length - 1]?.instance.id,
+                        previousEntryBottom: columnEntries[columnEntries.length - 1]?.span?.bottom,
+                    });
+                }
+
+                const fits = fitsInRegion(span, cursor, entry.instance.id);
 
                 // Calculate available space for debugging
                 const availableSpace = cursor.maxHeight - cursor.currentOffset;
@@ -822,9 +2039,83 @@ export const paginate = ({
                         sourceRegionKey: column.key,
                     };
 
-                    columnEntries.push(committedEntry);
+                    // Phase 4.5: New Entry Placement Tracking - Fits path
+                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        debugLog(normalizeComponentId(entry.instance.id), '✅', 'component-trace-new-entry-fits', {
+                            componentId: normalizeComponentId(entry.instance.id),
+                            runId,
+                            regionKey: key,
+                            page: page.pageNumber,
+                            column: column.columnNumber,
+                            spanTop: span.top,
+                            spanBottom: span.bottom,
+                            componentCountBefore: columnEntries.filter(e => e.instance.id === entry.instance.id).length,
+                            committedEntryRegion: committedEntry.region,
+                        });
+                    }
+
+                    // Fix 1: Check for duplicate before adding (Path 2: New entry fits)
+                    const existingIndexPath2 = findExistingEntry(entry, columnEntries, page.pageNumber, column.columnNumber);
+                    if (existingIndexPath2 >= 0) {
+                        // Update existing entry instead of adding duplicate
+                        columnEntries[existingIndexPath2] = {
+                            ...columnEntries[existingIndexPath2],
+                            span: committedEntry.span,
+                            region: committedEntry.region,
+                        };
+                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                            debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path2', {
+                                componentId: normalizeComponentId(entry.instance.id),
+                                runId,
+                                regionKey: key,
+                                page: page.pageNumber,
+                                column: column.columnNumber,
+                                existingIndex: existingIndexPath2,
+                            });
+                        }
+                    } else {
+                        columnEntries.push(committedEntry);
+                    }
                     const prevOffset = cursor.currentOffset;
                     advanceCursor(cursor, span);
+
+                    // Component-5 placement logging
+                    if (isPaginationDebugEnabled() && entry.instance.id === 'component-5') {
+                        debugLog('component-5', '✅', 'component-5-placed', {
+                            runId,
+                            regionKey: key,
+                            page: page.pageNumber,
+                            column: column.columnNumber,
+                            spanTop: entry.span?.top ?? span.top,
+                            spanBottom: entry.span?.bottom ?? span.bottom,
+                            spanHeight: entry.span?.height ?? span.height,
+                            cursorBefore: prevOffset,
+                            cursorAfter: cursor.currentOffset,
+                            regionHeightPx,
+                            overflows: (entry.span?.bottom ?? span.bottom) > regionHeightPx,
+                            overflowAmount: (entry.span?.bottom ?? span.bottom) - regionHeightPx,
+                        });
+                    }
+
+                    // Component-6 placement logging
+                    if (isPaginationDebugEnabled() && entry.instance.id === 'component-6') {
+                        debugLog('component-6', '✅', 'component-6-placed', {
+                            runId,
+                            regionKey: key,
+                            page: page.pageNumber,
+                            column: column.columnNumber,
+                            spanTop: entry.span?.top ?? span.top,
+                            spanBottom: entry.span?.bottom ?? span.bottom,
+                            spanHeight: entry.span?.height ?? span.height,
+                            cursorBefore: prevOffset,
+                            cursorAfter: cursor.currentOffset,
+                            regionHeightPx,
+                            overflows: (entry.span?.bottom ?? span.bottom) > regionHeightPx,
+                            overflowAmount: (entry.span?.bottom ?? span.bottom) - regionHeightPx,
+                            previousEntryId: columnEntries[columnEntries.length - 1]?.instance.id,
+                            previousEntryBottom: columnEntries[columnEntries.length - 1]?.span?.bottom,
+                        });
+                    }
 
                     logPaginationDecision(runId, 'entry-placed', {
                         componentId: entry.instance.id,
@@ -855,6 +2146,25 @@ export const paginate = ({
                     itemCount: entry.regionContent?.items.length ?? 0,
                 });
 
+                // Component-5/6 overflow routing logging
+                if (isPaginationDebugEnabled() && (entry.instance.id === 'component-5' || entry.instance.id === 'component-6')) {
+                    const nextRegion = findNextRegion(pages, key);
+                    debugLog(entry.instance.id, '⏭️', `${entry.instance.id}-routed-to-next-column`, {
+                        reason: 'does-not-fit',
+                        runId,
+                        regionKey: key,
+                        nextRegionKey: nextRegion?.key ?? null,
+                        nextPage: nextRegion?.pageNumber ?? null,
+                        nextColumn: nextRegion?.columnNumber ?? null,
+                        spanTop: span.top,
+                        spanBottom: span.bottom,
+                        spanHeight: span.height,
+                        cursorOffset: cursor.currentOffset,
+                        regionHeightPx,
+                        overflowAmount: span.bottom - regionHeightPx,
+                    });
+                }
+
                 logPaginationDecision(runId, 'entry-overflow', {
                     componentId: entry.instance.id,
                     regionKey: key,
@@ -870,7 +2180,7 @@ export const paginate = ({
                 // Measurement-based split evaluation for list components
                 // For list components with multiple items, use concrete measurements to determine
                 // the best split point. For block components, use simple threshold check.
-                const startsInBottomFifth = span.top > (regionHeightPx * 1);
+                const startsInBottomFifth = span.top > (regionHeightPx * 0.8);
                 let shouldAvoidSplit = startsInBottomFifth; // Default: simple threshold for blocks
                 let splitDecision: SplitDecision | null = null;
 
@@ -1125,7 +2435,43 @@ export const paginate = ({
                             sourceRegionKey: column.key,
                         };
 
-                        columnEntries.push(committedEntry);
+                        // Phase 4.6: Split Entry Placement Tracking - Overflow path 1
+                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                            debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-split-entry-overflow-1', {
+                                componentId: normalizeComponentId(entry.instance.id),
+                                runId,
+                                regionKey: key,
+                                page: page.pageNumber,
+                                column: column.columnNumber,
+                                spanTop: span.top,
+                                spanBottom: span.bottom,
+                                componentCountBefore: columnEntries.filter(e => e.instance.id === entry.instance.id).length,
+                                committedEntryRegion: committedEntry.region,
+                            });
+                        }
+
+                        // Fix 1: Check for duplicate before adding (Path 3: Split entry - first segment)
+                        const existingIndexPath3 = findExistingEntry(entry, columnEntries, page.pageNumber, column.columnNumber);
+                        if (existingIndexPath3 >= 0) {
+                            // Update existing entry instead of adding duplicate
+                            columnEntries[existingIndexPath3] = {
+                                ...columnEntries[existingIndexPath3],
+                                span: committedEntry.span,
+                                region: committedEntry.region,
+                            };
+                            if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                                debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path3', {
+                                    componentId: normalizeComponentId(entry.instance.id),
+                                    runId,
+                                    regionKey: key,
+                                    page: page.pageNumber,
+                                    column: column.columnNumber,
+                                    existingIndex: existingIndexPath3,
+                                });
+                            }
+                        } else {
+                            columnEntries.push(committedEntry);
+                        }
 
                         // Mark the column as full so subsequent entries route elsewhere
                         cursor.currentOffset = regionHeightPx + COMPONENT_VERTICAL_SPACING_PX;
@@ -1153,6 +2499,19 @@ export const paginate = ({
 
                     const updatedNextRegion = findNextRegion(pages, key);
                     if (!updatedNextRegion) {
+                        // Phase 4.10: Fallback Entry Placement Tracking - No next region
+                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                            debugLog(normalizeComponentId(entry.instance.id), '⚠️', 'component-trace-fallback-no-next-region', {
+                                componentId: normalizeComponentId(entry.instance.id),
+                                runId,
+                                regionKey: key,
+                                page: page.pageNumber,
+                                column: column.columnNumber,
+                                spanTop: span.top,
+                                spanBottom: span.bottom,
+                                componentCountBefore: columnEntries.filter(e => e.instance.id === entry.instance.id).length,
+                            });
+                        }
                         const committedEntry: CanvasLayoutEntry = {
                             ...entry,
                             region: {
@@ -1172,7 +2531,43 @@ export const paginate = ({
                             sourceRegionKey: column.key,
                         };
 
-                        columnEntries.push(committedEntry);
+                        // Phase 4.7: Split Entry Placement Tracking - Overflow path 2
+                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                            debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-split-entry-overflow-2', {
+                                componentId: normalizeComponentId(entry.instance.id),
+                                runId,
+                                regionKey: key,
+                                page: page.pageNumber,
+                                column: column.columnNumber,
+                                spanTop: span.top,
+                                spanBottom: span.bottom,
+                                componentCountBefore: columnEntries.filter(e => e.instance.id === entry.instance.id).length,
+                                committedEntryRegion: committedEntry.region,
+                            });
+                        }
+
+                        // Fix 1: Check for duplicate before adding (Path 4: Split entry - overflow segment)
+                        const existingIndexPath4 = findExistingEntry(entry, columnEntries, page.pageNumber, column.columnNumber);
+                        if (existingIndexPath4 >= 0) {
+                            // Update existing entry instead of adding duplicate
+                            columnEntries[existingIndexPath4] = {
+                                ...columnEntries[existingIndexPath4],
+                                span: committedEntry.span,
+                                region: committedEntry.region,
+                            };
+                            if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                                debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path4', {
+                                    componentId: normalizeComponentId(entry.instance.id),
+                                    runId,
+                                    regionKey: key,
+                                    page: page.pageNumber,
+                                    column: column.columnNumber,
+                                    existingIndex: existingIndexPath4,
+                                });
+                            }
+                        } else {
+                            columnEntries.push(committedEntry);
+                        }
                         // Mark region as full to prevent subsequent entries from overlapping
                         cursor.currentOffset = regionHeightPx + COMPONENT_VERTICAL_SPACING_PX;
                         logPaginationDecision(runId, 'region-full-no-next', {
@@ -1296,7 +2691,22 @@ export const paginate = ({
                         });
                         routedInRegion.add(`${entry.instance.id}:${rerouteKey}`);
                     } else {
-                        columnEntries.push({
+                        // Phase 4.8: Empty Split Placement Tracking
+                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                            debugLog(normalizeComponentId(entry.instance.id), '📦', 'component-trace-empty-split-place', {
+                                componentId: normalizeComponentId(entry.instance.id),
+                                runId,
+                                regionKey: key,
+                                page: page.pageNumber,
+                                column: column.columnNumber,
+                                spanTop: span.top,
+                                spanBottom: span.bottom,
+                                componentCountBefore: columnEntries.filter(e => e.instance.id === entry.instance.id).length,
+                            });
+                        }
+
+                        // Fix 1: Check for duplicate before adding (Path 5: Fallback entry placement)
+                        const fallbackEntry = {
                             ...entry,
                             region: {
                                 page: page.pageNumber,
@@ -1304,6 +2714,31 @@ export const paginate = ({
                                 index: columnEntries.length,
                             },
                             span,
+                        };
+                        const existingIndexPath5 = findExistingEntry(entry, columnEntries, page.pageNumber, column.columnNumber);
+                        if (existingIndexPath5 >= 0) {
+                            // Update existing entry instead of adding duplicate
+                            columnEntries[existingIndexPath5] = {
+                                ...columnEntries[existingIndexPath5],
+                                span: fallbackEntry.span,
+                                region: fallbackEntry.region,
+                            };
+                            if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                                debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path5', {
+                                    componentId: normalizeComponentId(entry.instance.id),
+                                    runId,
+                                    regionKey: key,
+                                    page: page.pageNumber,
+                                    column: column.columnNumber,
+                                    existingIndex: existingIndexPath5,
+                                });
+                            }
+                        } else {
+                            columnEntries.push(fallbackEntry);
+                        }
+                        logPaginationDecision(runId, 'region-full-no-next', {
+                            componentId: entry.instance.id,
+                            regionKey: key,
                             overflow: true,
                         });
                         cursor.currentOffset = regionHeightPx + COMPONENT_VERTICAL_SPACING_PX;
@@ -1344,7 +2779,43 @@ export const paginate = ({
                     sourceRegionKey: column.key,
                 };
 
-                columnEntries.push(placedEntry);
+                // Phase 4.9: Placed Entry from Split Tracking
+                if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    debugLog(normalizeComponentId(entry.instance.id), '📋', 'component-trace-placed-entry-from-split', {
+                        componentId: normalizeComponentId(entry.instance.id),
+                        runId,
+                        regionKey: key,
+                        page: page.pageNumber,
+                        column: column.columnNumber,
+                        spanTop: placedEntry.span?.top,
+                        spanBottom: placedEntry.span?.bottom,
+                        componentCountBefore: columnEntries.filter(e => e.instance.id === entry.instance.id).length,
+                        placedEntryRegion: placedEntry.region,
+                    });
+                }
+
+                // Fix 1: Check for duplicate before adding (Path 6: Placed entry from split)
+                const existingIndexPath6 = findExistingEntry(entry, columnEntries, page.pageNumber, column.columnNumber);
+                if (existingIndexPath6 >= 0) {
+                    // Update existing entry instead of adding duplicate
+                    columnEntries[existingIndexPath6] = {
+                        ...columnEntries[existingIndexPath6],
+                        span: placedEntry.span,
+                        region: placedEntry.region,
+                    };
+                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path6', {
+                            componentId: normalizeComponentId(entry.instance.id),
+                            runId,
+                            regionKey: key,
+                            page: page.pageNumber,
+                            column: column.columnNumber,
+                            existingIndex: existingIndexPath6,
+                        });
+                    }
+                } else {
+                    columnEntries.push(placedEntry);
+                }
                 advanceCursor(cursor, placedEntry.span!);
 
                 debugLog(entry.instance.id, '📦', 'placed segment', {
@@ -1449,7 +2920,42 @@ export const paginate = ({
                 }
             }
 
+            // Phase 6: Column Commit Tracking
+            if (isPaginationDebugEnabled()) {
+                const debugEntries = columnEntries.filter(e => shouldDebugComponent(e.instance.id));
+                debugEntries.forEach(debugEntry => {
+                    const sameComponentEntries = columnEntries.filter(e => e.instance.id === debugEntry.instance.id);
+                    debugLog(normalizeComponentId(debugEntry.instance.id), '💾', 'component-trace-column-commit', {
+                        componentId: normalizeComponentId(debugEntry.instance.id),
+                        runId,
+                        regionKey: key,
+                        page: page.pageNumber,
+                        column: column.columnNumber,
+                        componentCount: sameComponentEntries.length,
+                        componentEntries: sameComponentEntries.map(e => ({
+                            page: e.region?.page,
+                            column: e.region?.column,
+                            spanTop: e.span?.top,
+                            spanBottom: e.span?.bottom,
+                            spanHeight: e.span?.height,
+                        })),
+                        hasDuplicates: sameComponentEntries.length > 1,
+                        duplicatesInThisRegion: sameComponentEntries.filter(e =>
+                            e.region?.page === page.pageNumber &&
+                            e.region?.column === column.columnNumber
+                        ).length,
+                        // Show position in columnEntries array
+                        indices: columnEntries
+                            .map((e, idx) => ({ idx, entry: e }))
+                            .filter(({ entry }) => entry.instance.id === debugEntry.instance.id)
+                            .map(({ idx }) => idx),
+                    });
+                });
+            }
+
             column.entries = columnEntries;
+
+
             const lastSpan = columnEntries.length > 0 ? columnEntries[columnEntries.length - 1].span ?? null : null;
             const usedHeight = lastSpan ? lastSpan.bottom : 0;
             const availableHeight = Math.max(regionHeightPx - usedHeight, 0);
