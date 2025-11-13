@@ -55,8 +55,9 @@ const buildDebugComponentSet = (): Set<string> => {
 
 const DEBUG_COMPONENT_IDS = buildDebugComponentSet();
 
+// If "*" is in the set, debug all components; otherwise check if component ID is in set
 const shouldDebugComponent = (componentId: string): boolean =>
-    DEBUG_COMPONENT_IDS.has(componentId);
+    DEBUG_COMPONENT_IDS.has('*') || DEBUG_COMPONENT_IDS.has(componentId);
 
 export const logPlannerEvaluation = (
     emoji: string,
@@ -66,14 +67,14 @@ export const logPlannerEvaluation = (
     if (!isPlannerDebugEnabled()) {
         return;
     }
-    
+
     // Filter by component ID if present in context
     if (context.componentId && typeof context.componentId === 'string') {
         if (!shouldDebugComponent(context.componentId)) {
             return;
         }
     }
-    
+
     const payload = Object.keys(context).length > 0 ? context : undefined;
     if (payload) {
         console.log(`${emoji} [planner] ${label}`, payload);
@@ -89,7 +90,7 @@ export const logSegmentDecision = (
     if (!isPlannerDebugEnabled()) {
         return;
     }
-    
+
     // Filter by component ID
     if (!shouldDebugComponent(descriptor.componentId)) {
         return;

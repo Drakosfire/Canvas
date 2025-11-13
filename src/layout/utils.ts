@@ -327,7 +327,11 @@ export const buildBuckets = ({
                     estimatedHeight: record?.height ?? adapters.heightEstimator.estimateListHeight(segment.items, segment.startIndex > 0),
                     measurementKey,
                     needsMeasurement: !record,
-                    span: record ? { top: 0, bottom: record.height, height: record.height } : undefined,
+                    // CRITICAL FIX: Do NOT set span during creation
+                    // span.top and span.bottom should only be set when entry is placed in a column (via computeSpan)
+                    // Setting span.top = 0 causes overflow detection to fail because entryTop becomes 0
+                    // Height is already stored in estimatedHeight, so we don't need span.height during creation
+                    span: undefined,
                     slotDimensions,
                     listContinuation: {
                         isContinuation: segment.startIndex > 0,
@@ -358,7 +362,11 @@ export const buildBuckets = ({
             measurementKey,
             estimatedHeight: record?.height ?? DEFAULT_COMPONENT_HEIGHT_PX,
             needsMeasurement: !record,
-            span: record ? { top: 0, bottom: record.height, height: record.height } : undefined,
+            // CRITICAL FIX: Do NOT set span during creation
+            // span.top and span.bottom should only be set when entry is placed in a column (via computeSpan)
+            // Setting span.top = 0 causes overflow detection to fail because entryTop becomes 0
+            // Height is already stored in estimatedHeight, so we don't need span.height during creation
+            span: undefined,
             slotDimensions,
         };
         if (!buckets.has(key)) {

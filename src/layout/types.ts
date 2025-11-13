@@ -118,6 +118,18 @@ export interface HomeRegionAssignment {
     orderIndex: number;
 }
 
+/**
+ * Tracks measurement state per column for caching optimization.
+ * Allows pagination to wait until columns have "enough" measurements before running.
+ */
+export interface ColumnMeasurementState {
+    columnKey: string; // e.g., "1:1" (page:column)
+    requiredKeys: Set<MeasurementKey>; // All measurement keys needed for this column
+    measuredKeys: Set<MeasurementKey>; // Measurement keys we have
+    lastUpdateTime: number; // Timestamp of last measurement update
+    isStable: boolean; // Measurements haven't changed for STABILITY_THRESHOLD_MS
+}
+
 export interface CanvasLayoutState {
     components: ComponentInstance[];
     template: TemplateConfig | null;
@@ -162,6 +174,14 @@ export interface CanvasLayoutState {
     // Adapters for domain-specific operations
     adapters: import('../types/adapters.types').CanvasAdapters;
     segmentRerouteCache: SegmentRerouteCache;
+
+    // Column-based measurement caching for pagination optimization
+    columnMeasurementCache: Map<string, ColumnMeasurementState>;
+    measurementStabilityThreshold: number; // ms (default: 300ms)
+    
+    // Region height stability tracking for pagination optimization
+    regionHeightLastUpdateTime: number; // Timestamp of last region height update
+    regionHeightStabilityThreshold: number; // ms (default: 300ms)
 }
 
 
