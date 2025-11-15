@@ -4,7 +4,8 @@ type DebugChannel =
     | 'planner-spellcasting'
     | 'layout-dirty'
     | 'measure-first'
-    | 'layout-plan-diff';
+    | 'layout-plan-diff'
+    | 'column-cache-disabled';
 
 type DebugFlagSource = Partial<Record<DebugChannel, unknown>>;
 
@@ -19,6 +20,7 @@ const DEBUG_DEFAULTS: Record<DebugChannel, boolean> = {
     'layout-dirty': false,
     'measure-first': false,
     'layout-plan-diff': false,
+    'column-cache-disabled': false,
 };
 
 const ENV_VAR_MAP: Partial<Record<DebugChannel, string>> = {
@@ -28,6 +30,7 @@ const ENV_VAR_MAP: Partial<Record<DebugChannel, string>> = {
     'layout-dirty': 'CANVAS_DEBUG_LAYOUT',
     'measure-first': 'CANVAS_DEBUG_MEASURE_FIRST',
     'layout-plan-diff': 'CANVAS_DEBUG_PLAN_DIFF',
+    'column-cache-disabled': 'CANVAS_DEBUG_COLUMN_CACHE_DISABLED',
 };
 
 const REACT_APP_ENV_VAR_MAP: Partial<Record<DebugChannel, string>> = {
@@ -37,6 +40,7 @@ const REACT_APP_ENV_VAR_MAP: Partial<Record<DebugChannel, string>> = {
     'layout-dirty': 'REACT_APP_CANVAS_DEBUG_LAYOUT',
     'measure-first': 'REACT_APP_CANVAS_DEBUG_MEASURE_FIRST',
     'layout-plan-diff': 'REACT_APP_CANVAS_DEBUG_PLAN_DIFF',
+    'column-cache-disabled': 'REACT_APP_CANVAS_DEBUG_COLUMN_CACHE_DISABLED',
 };
 
 const parseBoolean = (value: unknown): boolean | undefined => {
@@ -95,6 +99,9 @@ const readEnvFlag = (channel: DebugChannel): boolean | undefined => {
         case 'layout-plan-diff':
             // React Scripts replaces process.env.REACT_APP_* at build time
             reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_PLAN_DIFF;
+            break;
+        case 'column-cache-disabled':
+            reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_COLUMN_CACHE_DISABLED;
             break;
     }
     

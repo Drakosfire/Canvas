@@ -179,6 +179,54 @@ const MEASUREMENT_STABILITY_THRESHOLD_MS = 300; // Default: 300ms
 const REGION_HEIGHT_STABILITY_THRESHOLD_MS = 300; // Default: 300ms
 const REGION_HEIGHT_SIGNIFICANT_CHANGE_PX = 50; // Trigger immediately if change > 50px
 
+const parseBooleanFlag = (value?: string | null): boolean | undefined => {
+    if (typeof value !== 'string') {
+        return undefined;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on', 'enable', 'enabled'].includes(normalized)) {
+        return true;
+    }
+    if (['0', 'false', 'no', 'off', 'disable', 'disabled'].includes(normalized)) {
+        return false;
+    }
+
+    return undefined;
+};
+
+const resolveColumnCacheFlag = (): boolean => {
+    if (typeof process !== 'undefined' && typeof process.env !== 'undefined') {
+        const reactAppValue = process.env.REACT_APP_CANVAS_COLUMN_CACHE;
+        const parsedReact = parseBooleanFlag(reactAppValue);
+        if (parsedReact !== undefined) {
+            return parsedReact;
+        }
+
+        const nodeValue = process.env.CANVAS_COLUMN_CACHE;
+        const parsedNode = parseBooleanFlag(nodeValue);
+        if (parsedNode !== undefined) {
+            return parsedNode;
+        }
+    }
+
+    return true; // Default: enabled
+};
+
+const envColumnCacheEnabled = resolveColumnCacheFlag();
+const debugColumnCacheDisabled = isDebugEnabled('column-cache-disabled');
+const COLUMN_CACHE_ENABLED = envColumnCacheEnabled && !debugColumnCacheDisabled;
+let columnCacheFlagLogged = false;
+
+const logColumnCacheDisabledOnce = () => {
+    if (COLUMN_CACHE_ENABLED || columnCacheFlagLogged || process.env.NODE_ENV === 'production') {
+        return;
+    }
+    columnCacheFlagLogged = true;
+    // eslint-disable-next-line no-console
+    console.log('[ColumnCache] Disabled via REACT_APP_CANVAS_COLUMN_CACHE flag (telemetry mode)');
+};
+
 export const createInitialState = (): CanvasLayoutState => ({
     components: [],
     template: null,
@@ -456,14 +504,16 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             }
 
             // Initialize column cache for measure-first flow
-            const columnCache = updateColumnCache(
-                base.columnMeasurementCache,
-                [], // No new measurements yet
-                base.homeRegions,
-                requiredKeys,
-                regionKey,
-                base.measurements // Pass current measurements
-            );
+            const columnCache = COLUMN_CACHE_ENABLED
+                ? updateColumnCache(
+                    base.columnMeasurementCache,
+                    [], // No new measurements yet
+                    base.homeRegions,
+                    requiredKeys,
+                    regionKey,
+                    base.measurements // Pass current measurements
+                )
+                : new Map<string, ColumnMeasurementState>();
 
             return {
                 ...base,
@@ -502,14 +552,16 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
         }
 
         // Update column cache when entries are recomputed
-        const columnCache = updateColumnCache(
-            base.columnMeasurementCache,
-            [], // Use current measurements from state
-            base.homeRegions,
-            requiredKeys,
-            regionKey,
-            base.measurements // Pass current measurements
-        );
+        const columnCache = COLUMN_CACHE_ENABLED
+            ? updateColumnCache(
+                base.columnMeasurementCache,
+                [], // Use current measurements from state
+                base.homeRegions,
+                requiredKeys,
+                regionKey,
+                base.measurements // Pass current measurements
+            )
+            : new Map<string, ColumnMeasurementState>();
 
         return {
             ...base,
@@ -663,7 +715,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             // CRITICAL: Don't trigger pagination if there's already a pending layout
             // Wait for current pagination to complete before triggering again
             const canTriggerPagination = shouldTriggerPagination && !state.pendingLayout;
-            
+
             if (shouldTriggerPagination) {
                 logIsLayoutDirtySet('SET_REGION_HEIGHT', {
                     previousHeight: state.regionHeightPx,
@@ -728,29 +780,36 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             });
 
             // Update column measurement cache
-            const updatedCache = updateColumnCache(
-                state.columnMeasurementCache,
-                action.payload.measurements,
-                state.homeRegions,
-                requiredKeys,
-                regionKey,
-                measurements // Pass current measurements map
-            );
+            const columnCacheEnabled = COLUMN_CACHE_ENABLED;
+            const updatedCache = columnCacheEnabled
+                ? updateColumnCache(
+                    state.columnMeasurementCache,
+                    action.payload.measurements,
+                    state.homeRegions,
+                    requiredKeys,
+                    regionKey,
+                    measurements // Pass current measurements map
+                )
+                : new Map<string, ColumnMeasurementState>();
 
             // Check if any columns meet threshold for pagination
-            const readyColumns = getReadyColumns(
-                updatedCache,
-                state.measurementStabilityThreshold,
-                measurements
-            );
+            const readyColumns = columnCacheEnabled
+                ? getReadyColumns(
+                    updatedCache,
+                    state.measurementStabilityThreshold,
+                    measurements
+                )
+                : new Set<string>();
 
             // Always log column cache state for visibility (even without debug flag)
             if (process.env.NODE_ENV !== 'production') {
-                if (updatedCache.size > 0) {
-                    const cacheSummary = Array.from(updatedCache.entries()).map(([key, state]) => ({
+                if (!columnCacheEnabled) {
+                    logColumnCacheDisabledOnce();
+                } else if (updatedCache.size > 0) {
+                    const cacheSummary = Array.from(updatedCache.entries()).map(([key, cacheState]) => ({
                         columnKey: key,
-                        requiredCount: state.requiredKeys.size,
-                        measuredCount: state.measuredKeys.size,
+                        requiredCount: cacheState.requiredKeys.size,
+                        measuredCount: cacheState.measuredKeys.size,
                         ready: readyColumns.has(key),
                     }));
                     // eslint-disable-next-line no-console
@@ -759,7 +818,6 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                         cacheSummary,
                     });
                 } else {
-                    // Log when cache is empty to help diagnose issues
                     // eslint-disable-next-line no-console
                     console.log('[ColumnCache] Cache empty:', {
                         requiredKeysCount: requiredKeys.size,
@@ -795,11 +853,13 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 });
 
                 // Check if columns are ready for pagination (after rebuild)
-                const readyColumnsAfterRebuild = getReadyColumns(
-                    recomputed.columnMeasurementCache,
-                    recomputed.measurementStabilityThreshold,
-                    measurements
-                );
+                const readyColumnsAfterRebuild = columnCacheEnabled
+                    ? getReadyColumns(
+                        recomputed.columnMeasurementCache,
+                        recomputed.measurementStabilityThreshold,
+                        measurements
+                    )
+                    : new Set<string>();
 
                 // CRITICAL: Column cache optimization reduces pagination runs
                 // For initial render, we should paginate if:
@@ -820,14 +880,30 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 // - This is initial render (was waiting, now not), OR  
                 // - We have new measurements during initial load (still waiting), OR
                 // - Columns are ready (optimization - primary path after initial render)
-                const shouldTriggerPagination =
-                    nowComplete ||
-                    isInitialRender ||
-                    shouldTriggerOnNewMeasurements ||
-                    readyColumnsAfterRebuild.size > 0;
+                const shouldTriggerPagination = columnCacheEnabled
+                    ? (
+                        nowComplete ||
+                        isInitialRender ||
+                        shouldTriggerOnNewMeasurements ||
+                        readyColumnsAfterRebuild.size > 0
+                    )
+                    : (
+                        nowComplete ||
+                        isInitialRender ||
+                        hasAdditions
+                    );
 
-                // Always log pagination trigger decision (even without debug flag)
-                if (process.env.NODE_ENV !== 'production') {
+                const triggerReason = (() => {
+                    if (nowComplete) return 'initial-measurements-complete';
+                    if (isInitialRender) return 'initial-render';
+                    if (!columnCacheEnabled && hasAdditions) return 'column-cache-disabled';
+                    if (shouldTriggerOnNewMeasurements) return 'new-measurements-added';
+                    if (readyColumnsAfterRebuild.size > 0) return 'columns-ready';
+                    return 'waiting-for-columns';
+                })();
+
+                // Always log pagination trigger decision when cache is active (even without debug flag)
+                if (columnCacheEnabled && process.env.NODE_ENV !== 'production') {
                     // eslint-disable-next-line no-console
                     console.log('[ColumnCache] Pagination trigger decision:', {
                         shouldTrigger: shouldTriggerPagination,
@@ -839,16 +915,14 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                         hasAdditions,
                         shouldTriggerOnNewMeasurements,
                         cacheSize: recomputed.columnMeasurementCache.size,
-                        reason: shouldTriggerPagination
-                            ? (nowComplete ? 'initial-measurements-complete'
-                                : isInitialRender ? 'initial-render'
-                                    : shouldTriggerOnNewMeasurements ? 'new-measurements-added'
-                                        : 'columns-ready')
-                            : 'waiting-for-columns',
+                        columnCacheEnabled,
+                        reason: shouldTriggerPagination ? triggerReason : 'waiting-for-columns',
                     });
+                } else if (!columnCacheEnabled) {
+                    logColumnCacheDisabledOnce();
                 }
 
-                if (shouldLogLayoutDirty() && readyColumnsAfterRebuild.size > 0) {
+                if (columnCacheEnabled && shouldLogLayoutDirty() && readyColumnsAfterRebuild.size > 0) {
                     console.log('[layout-dirty] Column cache ready columns:', {
                         readyColumns: Array.from(readyColumnsAfterRebuild),
                         totalColumns: recomputed.columnMeasurementCache.size,
@@ -856,7 +930,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 }
 
                 // Debug logging for column cache state
-                if (shouldLogLayoutDirty() && recomputed.columnMeasurementCache.size > 0) {
+                if (columnCacheEnabled && shouldLogLayoutDirty() && recomputed.columnMeasurementCache.size > 0) {
                     const cacheDetails = Array.from(recomputed.columnMeasurementCache.entries()).map(([key, state]) => ({
                         columnKey: key,
                         requiredCount: state.requiredKeys.size,
@@ -874,13 +948,10 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 // CRITICAL: Don't trigger pagination if there's already a pending layout
                 // Wait for current pagination to complete before triggering again
                 const canTriggerPagination = shouldTriggerPagination && !state.pendingLayout;
-                
+
                 if (shouldTriggerPagination) {
                     logIsLayoutDirtySet('MEASUREMENTS_UPDATED', {
-                        reason: nowComplete ? 'initial-measurements-complete'
-                            : isInitialRender ? 'initial-render'
-                                : shouldTriggerOnNewMeasurements ? 'new-measurements-added'
-                                    : 'columns-ready',
+                        reason: triggerReason,
                         readyColumns: Array.from(readyColumnsAfterRebuild),
                         hasAdditions,
                         wasWaitingForMeasurements,
