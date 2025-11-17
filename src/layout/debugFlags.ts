@@ -5,7 +5,10 @@ type DebugChannel =
     | 'layout-dirty'
     | 'measure-first'
     | 'layout-plan-diff'
-    | 'column-cache-disabled';
+    | 'column-cache-disabled'
+    | 'cursor'
+    | 'plan-commit'
+    | 'region-height';
 
 type DebugFlagSource = Partial<Record<DebugChannel, unknown>>;
 
@@ -21,6 +24,9 @@ const DEBUG_DEFAULTS: Record<DebugChannel, boolean> = {
     'measure-first': false,
     'layout-plan-diff': false,
     'column-cache-disabled': false,
+    'cursor': false,
+    'plan-commit': false,
+    'region-height': false,
 };
 
 const ENV_VAR_MAP: Partial<Record<DebugChannel, string>> = {
@@ -31,6 +37,9 @@ const ENV_VAR_MAP: Partial<Record<DebugChannel, string>> = {
     'measure-first': 'CANVAS_DEBUG_MEASURE_FIRST',
     'layout-plan-diff': 'CANVAS_DEBUG_PLAN_DIFF',
     'column-cache-disabled': 'CANVAS_DEBUG_COLUMN_CACHE_DISABLED',
+    'cursor': 'CANVAS_DEBUG_CURSOR',
+    'plan-commit': 'CANVAS_DEBUG_PLAN_COMMIT',
+    'region-height': 'CANVAS_DEBUG_REGION_HEIGHT',
 };
 
 const REACT_APP_ENV_VAR_MAP: Partial<Record<DebugChannel, string>> = {
@@ -41,6 +50,9 @@ const REACT_APP_ENV_VAR_MAP: Partial<Record<DebugChannel, string>> = {
     'measure-first': 'REACT_APP_CANVAS_DEBUG_MEASURE_FIRST',
     'layout-plan-diff': 'REACT_APP_CANVAS_DEBUG_PLAN_DIFF',
     'column-cache-disabled': 'REACT_APP_CANVAS_DEBUG_COLUMN_CACHE_DISABLED',
+    'cursor': 'REACT_APP_CANVAS_DEBUG_CURSOR',
+    'plan-commit': 'REACT_APP_CANVAS_DEBUG_PLAN_COMMIT',
+    'region-height': 'REACT_APP_CANVAS_DEBUG_REGION_HEIGHT',
 };
 
 const parseBoolean = (value: unknown): boolean | undefined => {
@@ -74,7 +86,7 @@ const readEnvFlag = (channel: DebugChannel): boolean | undefined => {
     // React Scripts replaces process.env.REACT_APP_* at build time
     // Must access each env var directly (not through variable) for webpack to replace it
     let reactAppValue: string | undefined;
-    
+
     switch (channel) {
         case 'paginate-spellcasting':
             // React Scripts replaces process.env.REACT_APP_* at build time
@@ -103,8 +115,17 @@ const readEnvFlag = (channel: DebugChannel): boolean | undefined => {
         case 'column-cache-disabled':
             reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_COLUMN_CACHE_DISABLED;
             break;
+        case 'cursor':
+            reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_CURSOR;
+            break;
+        case 'plan-commit':
+            reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_PLAN_COMMIT;
+            break;
+        case 'region-height':
+            reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_REGION_HEIGHT;
+            break;
     }
-    
+
     if (reactAppValue !== undefined) {
         const parsed = parseBoolean(reactAppValue);
         if (parsed !== undefined) {

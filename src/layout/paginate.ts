@@ -24,6 +24,7 @@ import {
 import { isDebugEnabled } from './debugFlags';
 import { buildSegmentPlan, SegmentRerouteCache } from './planner';
 import type { PlannerRegionConfig, SegmentDescriptor } from './segmentTypes';
+import { logRegionHeightEvent } from './regionHeightDebug';
 
 interface RegionPosition {
     pageNumber: number;
@@ -60,6 +61,34 @@ if (typeof window !== 'undefined') {
 
 const MAX_REGION_ITERATIONS = 400;
 const MAX_PAGES = 10; // Circuit breaker to prevent infinite pagination loops
+const MAX_PAGINATION_RUNS_PER_SIGNATURE = 10; // Prevent runaway pagination loops without layout changes
+
+type PaginationLoopGuardKey = string;
+
+let paginationLoopGuardKey: PaginationLoopGuardKey | null = null;
+let paginationLoopGuardCount = 0;
+let paginationLoopGuardTriggered = false;
+
+const buildBucketSignature = (buckets: RegionBuckets): string => {
+    if (buckets.size === 0) {
+        return 'empty';
+    }
+    return Array.from(buckets.entries())
+        .map(([key, entries]) => `${key}:${entries.length}`)
+        .sort()
+        .join('|');
+};
+
+const createEmptyPlan = (): LayoutPlan => ({
+    pages: [],
+    overflowWarnings: [],
+});
+
+// Entry removal threshold: Only remove entries if overflow exceeds this value (prevents aggressive removal for sub-pixel overflows)
+const ENTRY_REMOVAL_OVERFLOW_THRESHOLD_PX = 5;
+
+// Significant region height change threshold: Reset already-rerouted flag if region height changes by more than this
+const SIGNIFICANT_REGION_HEIGHT_CHANGE_PX = 10;
 
 // No default debug components - use CLI/env vars to specify: npm run canvas-debug -- component-1 component-2
 const DEFAULT_DEBUG_COMPONENT_IDS: string[] = [];
@@ -131,8 +160,11 @@ const DEBUG_COMPONENT_IDS = buildDebugComponentSet();
 /**
  * Normalize component IDs to zero-padded format for consistent logging.
  * Examples: "component-0" -> "component-00", "component-1" -> "component-01", "component-10" -> "component-10"
+ * 
+ * @export
+ * Exported for use in measurement.tsx and other modules
  */
-const normalizeComponentId = (componentId: string): string => {
+export const normalizeComponentId = (componentId: string): string => {
     const match = componentId.match(/^component-(\d+)$/);
     if (match) {
         const num = parseInt(match[1], 10);
@@ -153,6 +185,7 @@ const matchesDebugComponent = (componentId: string, debugId: string): boolean =>
 
 const isPaginationDebugEnabled = (): boolean => isDebugEnabled('paginate-spellcasting');
 const isPlannerDebugEnabled = (): boolean => isDebugEnabled('planner-spellcasting');
+const isCursorDebugEnabled = (): boolean => isDebugEnabled('cursor');
 // Only debug components explicitly specified via CLI/env vars
 // If "*" is in the set, debug all components; otherwise check if component ID is in set
 const shouldDebugComponent = (componentId: string): boolean =>
@@ -168,6 +201,7 @@ if (typeof window !== 'undefined') {
     const enabledFlags: string[] = [];
     if (isPaginationDebugEnabled()) enabledFlags.push('paginate');
     if (isPlannerDebugEnabled()) enabledFlags.push('planner');
+    if (isCursorDebugEnabled()) enabledFlags.push('cursor');
     if (isDebugEnabled('layout-plan-diff')) enabledFlags.push('plan-diff');
     if (isDebugEnabled('measurement-spellcasting')) enabledFlags.push('measurement');
     if (isDebugEnabled('layout-dirty')) enabledFlags.push('layout');
@@ -216,9 +250,18 @@ const debugLog = (componentId: string, emoji: string, label: string, payload?: u
         return;
     }
 
-    const basePayload: Record<string, unknown> = { componentId };
+    // Normalize componentId for consistent logging
+    const normalizedId = normalizeComponentId(componentId);
+    const basePayload: Record<string, unknown> = { componentId: normalizedId };
+
+    // If payload has its own componentId, normalize it too
     if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-        Object.assign(basePayload, payload as Record<string, unknown>);
+        const payloadObj = payload as Record<string, unknown>;
+        const normalizedPayload = { ...payloadObj };
+        if (normalizedPayload.componentId && typeof normalizedPayload.componentId === 'string') {
+            normalizedPayload.componentId = normalizeComponentId(normalizedPayload.componentId);
+        }
+        Object.assign(basePayload, normalizedPayload);
     } else if (payload !== undefined) {
         basePayload.value = payload;
     }
@@ -303,11 +346,18 @@ const logPaginationDecision = (...args: unknown[]) => {
     // Extract componentId from payload if present
     // Format: logPaginationDecision(runId, 'label', { componentId: ..., ... })
     let shouldLog = true;
+    let normalizedArgs = [...args];
+
     if (args.length >= 3 && typeof args[2] === 'object' && args[2] !== null) {
-        const payload = args[2] as { componentId?: string };
+        const payload = args[2] as { componentId?: string;[key: string]: unknown };
         if (payload.componentId) {
             // Only log if this component is in the debug list
             shouldLog = shouldDebugComponent(payload.componentId);
+
+            // Normalize componentId in payload for consistent logging
+            const normalizedPayload = { ...payload };
+            normalizedPayload.componentId = normalizeComponentId(payload.componentId);
+            normalizedArgs = [args[0], args[1], normalizedPayload, ...args.slice(3)];
         }
     }
     // For logs without componentId (like 'run-start'), always log if pagination debug is enabled
@@ -317,7 +367,7 @@ const logPaginationDecision = (...args: unknown[]) => {
     }
 
     // eslint-disable-next-line no-console
-    console.debug('[paginate]', ...args);
+    console.debug('[paginate]', ...normalizedArgs);
 };
 
 const isSpellcastingMeasurementKey = (key: string): boolean =>
@@ -381,7 +431,9 @@ const ensurePage = (
     pages: PageLayout[],
     pageNumber: number,
     columnCount: number,
-    pendingQueues: Map<string, CanvasLayoutEntry[]>
+    pendingQueues: Map<string, CanvasLayoutEntry[]>,
+    runId?: number,
+    reason?: string
 ): boolean => {
     while (pages.length < pageNumber) {
         const nextPageNumber = pages.length + 1;
@@ -407,6 +459,17 @@ const ensurePage = (
             }
         }
         pages.push({ pageNumber: nextPageNumber, columns });
+
+        // Log page creation for debugging
+        if (isCursorDebugEnabled() || isPaginationDebugEnabled()) {
+            logPaginationDecision(runId ?? 0, 'page-created', {
+                pageNumber: nextPageNumber,
+                totalPages: pages.length,
+                requestedPage: pageNumber,
+                reason: reason ?? 'unknown',
+                columnCount,
+            });
+        }
     }
     return true; // Successfully created pages
 };
@@ -427,6 +490,31 @@ const findNextRegion = (pages: PageLayout[], currentKey: string): RegionPosition
         return null;
     }
     return sequence[currentIndex + 1] ?? null;
+};
+
+/**
+ * Find the other column on the same page as the current region.
+ * For 2-column layouts, returns column 2 if current is column 1, and vice versa.
+ * Returns null if there's no other column (single-column layout or invalid region).
+ */
+const findOtherColumnOnSamePage = (pages: PageLayout[], currentKey: string): RegionPosition | null => {
+    for (const page of pages) {
+        for (const column of page.columns) {
+            if (column.key === currentKey) {
+                // Found the current region, now find the other column on the same page
+                const otherColumn = page.columns.find((col) => col.key !== currentKey);
+                if (otherColumn) {
+                    return {
+                        pageNumber: page.pageNumber,
+                        columnNumber: otherColumn.columnNumber,
+                        key: otherColumn.key,
+                    };
+                }
+                return null; // Single-column layout or no other column found
+            }
+        }
+    }
+    return null; // Current region not found
 };
 
 const createCursor = (regionKey: string, maxHeight: number): RegionCursor => ({
@@ -691,6 +779,54 @@ export const paginate = ({
     // CRITICAL: Check if inputs are identical to last run
     // If so, return previousPlan without running pagination (prevents duplicate runs)
     const bucketCount = buckets.size;
+
+    const bucketSignature = buildBucketSignature(buckets);
+    const loopGuardKey: PaginationLoopGuardKey = [
+        columnCount,
+        regionHeightPx.toFixed(2),
+        requestedPageCount,
+        bucketSignature,
+    ].join('|');
+    if (paginationLoopGuardKey !== loopGuardKey) {
+        paginationLoopGuardKey = loopGuardKey;
+        paginationLoopGuardCount = 0;
+        paginationLoopGuardTriggered = false;
+    }
+    paginationLoopGuardCount += 1;
+
+    if (paginationLoopGuardCount > MAX_PAGINATION_RUNS_PER_SIGNATURE) {
+        if (!paginationLoopGuardTriggered) {
+            paginationLoopGuardTriggered = true;
+            // eslint-disable-next-line no-console
+            console.error(
+                '⛔ [paginate] Loop guard triggered - more than %d runs without layout changes (key=%s). Returning previous plan.',
+                MAX_PAGINATION_RUNS_PER_SIGNATURE,
+                loopGuardKey
+            );
+        } else if (isPaginationDebugEnabled()) {
+            logPaginationDecision(runId, 'loop-guard-short-circuit', {
+                loopGuardKey,
+                loopGuardCount: paginationLoopGuardCount,
+                regionHeightPx,
+                requestedPageCount,
+                bucketCount,
+            });
+        }
+
+        lastRegionHeightPx = regionHeightPx;
+        lastNormalizedHeight = regionHeightPx;
+        return previousPlan ?? createEmptyPlan();
+    }
+
+    logRegionHeightEvent('paginate-run-start', {
+        runId,
+        regionHeightPx,
+        previousRegionHeight: lastRegionHeightPx,
+        heightDiff: lastRegionHeightPx != null ? regionHeightPx - lastRegionHeightPx : null,
+        requestedPageCount,
+        columnCount,
+        bucketCount,
+    });
     const inputsIdentical = areInputsIdentical(
         regionHeightPx,
         columnCount,
@@ -734,6 +870,17 @@ export const paginate = ({
     // Detect regionHeight changes (feedback loop indicator)
     const regionHeightChanged = lastRegionHeightPx !== null && Math.abs(lastRegionHeightPx - regionHeightPx) > 1;
     const normalizedHeightChanged = lastNormalizedHeight !== null && Math.abs(lastNormalizedHeight - regionHeightPx) > 1;
+
+    if (regionHeightChanged) {
+        logRegionHeightEvent('paginate-region-height-change', {
+            runId,
+            previousRaw: lastRegionHeightPx,
+            currentRaw: regionHeightPx,
+            rawDelta: lastRegionHeightPx != null ? regionHeightPx - lastRegionHeightPx : null,
+            normalizedDelta: lastNormalizedHeight != null ? regionHeightPx - lastNormalizedHeight : null,
+            warningFeedbackLoop: normalizedHeightChanged,
+        });
+    }
 
     // Component-5 region height change logging
     if (isPaginationDebugEnabled() && shouldDebugComponent('component-5')) {
@@ -824,7 +971,7 @@ export const paginate = ({
     }, 1);
 
     const initialPageCount = Math.max(1, requestedPageCount, maxBucketPage);
-    if (!ensurePage(pages, initialPageCount, columnCount, pendingQueues)) {
+    if (!ensurePage(pages, initialPageCount, columnCount, pendingQueues, runId, 'initial-page-count')) {
         // Hit MAX_PAGES limit during initial setup
         return { pages, overflowWarnings: [] };
     }
@@ -985,13 +1132,18 @@ export const paginate = ({
                 return true;
             });
             const beforeCount = column.entries.length;
+            // Track removed entry IDs so we can remove them from the queue
+            const removedEntryIds = new Set<string>();
             columnEntries = columnEntries.filter((entry) => {
                 // Keep entries that are in other regions (they'll be handled by their own regions)
                 if (!entry.region || entry.region.page !== page.pageNumber || entry.region.column !== column.columnNumber) {
                     return true;
                 }
                 // For entries in this region, check if they overflow the current height
-                if (!entry.span) return false;
+                if (!entry.span) {
+                    removedEntryIds.add(entry.instance.id);
+                    return false;
+                }
 
                 // CRITICAL FIX: Only remove entries if they actually overflow the region
                 // If the measurement layer is working correctly, measurement refinements shouldn't change order
@@ -1002,9 +1154,25 @@ export const paginate = ({
                 const entryBottom = entryTop + currentHeight;
 
                 // Only remove if the component actually overflows the region with its current measurement
-                const overflows = entryBottom > regionHeightPx;
+                // Use threshold to avoid aggressive removal for sub-pixel overflows
+                const overflowAmount = entryBottom - regionHeightPx;
+                const overflows = overflowAmount > ENTRY_REMOVAL_OVERFLOW_THRESHOLD_PX;
+
+                // Log small overflows that we're keeping (for debugging)
+                if (overflowAmount > 0 && overflowAmount <= ENTRY_REMOVAL_OVERFLOW_THRESHOLD_PX && isPaginationDebugEnabled()) {
+                    logPaginationDecision(runId, 'entry-kept-despite-small-overflow', {
+                        componentId: entry.instance.id,
+                        regionKey: key,
+                        calculatedBottom: entryBottom,
+                        newRegionHeight: regionHeightPx,
+                        overflowAmount,
+                        threshold: ENTRY_REMOVAL_OVERFLOW_THRESHOLD_PX,
+                        reason: 'Overflow below threshold, keeping entry',
+                    });
+                }
 
                 if (overflows) {
+                    removedEntryIds.add(entry.instance.id);
                     if (isPaginationDebugEnabled()) {
                         logPaginationDecision(runId, 'entry-removed-from-columnEntries-invalid', {
                             componentId: entry.instance.id,
@@ -1014,7 +1182,8 @@ export const paginate = ({
                             currentMeasurementHeight: currentMeasurement?.height,
                             calculatedBottom: entryBottom,
                             newRegionHeight: regionHeightPx,
-                            overflowAmount: entryBottom - regionHeightPx,
+                            overflowAmount,
+                            threshold: ENTRY_REMOVAL_OVERFLOW_THRESHOLD_PX,
                             reason: 'overflow',
                         });
                     }
@@ -1032,6 +1201,32 @@ export const paginate = ({
                     previousRegionHeight: lastRegionHeightPx,
                     heightChanged: regionHeightChanged,
                 });
+            }
+
+            // CRITICAL FIX: Remove entries from queue that were removed from columnEntries
+            // This prevents cascading routing when entries are removed due to overflow
+            // See: 2025-11-16-component-04-cascading-routing-fix-HANDOFF.md
+            if (removedEntryIds.size > 0) {
+                const queueBeforeCount = regionQueue.length;
+                // Filter out removed entries from the queue
+                const filteredQueue = regionQueue.filter(
+                    entry => !removedEntryIds.has(entry.instance.id)
+                );
+                regionQueue.length = 0;
+                regionQueue.push(...filteredQueue);
+                const queueAfterCount = regionQueue.length;
+                const removedFromQueue = queueBeforeCount - queueAfterCount;
+
+                if (isPaginationDebugEnabled()) {
+                    logPaginationDecision(runId, 'queue-entries-removed-after-columnEntries-filter', {
+                        regionKey: key,
+                        removedEntryIds: Array.from(removedEntryIds),
+                        queueBeforeCount,
+                        queueAfterCount,
+                        removedFromQueue,
+                        reason: 'Entries removed from columnEntries due to overflow, also removed from queue to prevent cascading routing',
+                    });
+                }
             }
 
             // Fix 1: Helper function to find existing entry in columnEntries to prevent duplication
@@ -1095,6 +1290,16 @@ export const paginate = ({
             const cursor = createCursor(key, regionHeightPx);
             let safetyCounter = 0;
 
+            // Cursor debug: Log cursor creation
+            if (isCursorDebugEnabled()) {
+                logPaginationDecision(runId, 'cursor-created', {
+                    regionKey: key,
+                    cursorOffset: cursor.currentOffset,
+                    cursorMaxHeight: cursor.maxHeight,
+                    regionHeightPx,
+                });
+            }
+
             // CRITICAL FIX: Initialize cursor from already-placed entries in THIS column
             // Use columnEntries (filtered from previousPlan) instead of filtering regionQueue,
             // because regionQueue contains entries ASSIGNED to this region, not entries
@@ -1109,11 +1314,12 @@ export const paginate = ({
             );
 
             // Debug: Log cursor initialization attempt
-            if (isPaginationDebugEnabled()) {
+            if (isPaginationDebugEnabled() || isCursorDebugEnabled()) {
                 logPaginationDecision(runId, 'cursor-initialization-attempt', {
                     regionKey: key,
                     columnEntriesCount: column.entries.length,
                     alreadyPlacedCount: alreadyPlacedEntries.length,
+                    cursorOffsetBeforeInit: cursor.currentOffset,
                     sampleEntry: column.entries[0] ? {
                         id: column.entries[0].instance.id,
                         hasSpan: !!column.entries[0].span,
@@ -1157,14 +1363,16 @@ export const paginate = ({
                         });
                         cursor.currentOffset = 0;
                     } else {
-                        logPaginationDecision(runId, 'cursor-initialized-from-column-entries', {
-                            regionKey: key,
-                            alreadyPlacedCount: alreadyPlacedEntries.length,
-                            lastPlacedEntryId: lastPlacedEntry.instance.id,
-                            lastPlacedSpanBottom: lastPlacedEntry.span.bottom,
-                            cursorInitializedTo: cursor.currentOffset,
-                            regionHeightPx,
-                        });
+                        if (isPaginationDebugEnabled() || isCursorDebugEnabled()) {
+                            logPaginationDecision(runId, 'cursor-initialized-from-column-entries', {
+                                regionKey: key,
+                                alreadyPlacedCount: alreadyPlacedEntries.length,
+                                lastPlacedEntryId: lastPlacedEntry.instance.id,
+                                lastPlacedSpanBottom: lastPlacedEntry.span.bottom,
+                                cursorInitializedTo: cursor.currentOffset,
+                                regionHeightPx,
+                            });
+                        }
                     }
                 }
             } else if (column.entries.length > 0 && isPaginationDebugEnabled()) {
@@ -1204,6 +1412,18 @@ export const paginate = ({
 
             while (regionQueue.length > 0 && safetyCounter < MAX_REGION_ITERATIONS) {
                 safetyCounter += 1;
+
+                // Cursor debug: Log cursor position at start of loop iteration
+                if (isCursorDebugEnabled() && regionQueue.length > 0) {
+                    logPaginationDecision(runId, 'cursor-at-loop-start', {
+                        regionKey: key,
+                        loopIteration: safetyCounter,
+                        cursorOffset: cursor.currentOffset,
+                        cursorMaxHeight: cursor.maxHeight,
+                        queueLength: regionQueue.length,
+                        nextComponentId: regionQueue[0]?.instance.id,
+                    });
+                }
 
                 // Peek at next entry without removing it
                 const peekedEntry = regionQueue[0];
@@ -1269,7 +1489,17 @@ export const paginate = ({
                         if (entryBottomWithSpacing > cursor.currentOffset) {
                             cursor.currentOffset = entryBottomWithSpacing;
 
-                            if (isPaginationDebugEnabled() && shouldDebugComponent(peekedEntry.instance.id)) {
+                            if (isCursorDebugEnabled()) {
+                                // Cursor debug: Always log cursor advancement when cursor flag enabled
+                                logPaginationDecision(runId, 'cursor-advanced-for-skipped-entry', {
+                                    regionKey: key,
+                                    componentId: peekedEntry.instance.id,
+                                    entrySpanBottom: entryBottom,
+                                    cursorBefore: prevCursorOffset,
+                                    cursorAfter: cursor.currentOffset,
+                                    cursorAdvance: cursor.currentOffset - prevCursorOffset,
+                                });
+                            } else if (isPaginationDebugEnabled() && shouldDebugComponent(peekedEntry.instance.id)) {
                                 debugLog(peekedEntry.instance.id, '🔧', 'cursor-advanced-for-skipped-entry', {
                                     runId,
                                     regionKey: key,
@@ -1282,7 +1512,23 @@ export const paginate = ({
                             }
                         }
 
-                        if (isPaginationDebugEnabled() && shouldDebugComponent(peekedEntry.instance.id)) {
+                        // CRITICAL FIX: Advance cursor even when skipping entries
+                        // The cursor must reflect the actual position of skipped entries to maintain consistency
+                        // This ensures cursor matches the visual position, not just initialization point
+                        if (placedSpan.bottom > cursor.currentOffset) {
+                            cursor.currentOffset = placedSpan.bottom + COMPONENT_VERTICAL_SPACING_PX;
+                            if (isPaginationDebugEnabled() && shouldDebugComponent(peekedEntry.instance.id)) {
+                                debugLog(peekedEntry.instance.id, '⏭️', 'entry-skipped-cursor-advanced', {
+                                    runId,
+                                    regionKey: key,
+                                    componentId: peekedEntry.instance.id,
+                                    spanBottom: placedSpan.bottom,
+                                    cursorBefore: prevCursorOffset,
+                                    cursorAfter: cursor.currentOffset,
+                                    reason: 'Entry skipped but cursor advanced to maintain position consistency',
+                                });
+                            }
+                        } else if (isPaginationDebugEnabled() && shouldDebugComponent(peekedEntry.instance.id)) {
                             debugLog(peekedEntry.instance.id, '⏭️', 'entry-skipped-already-correctly-placed', {
                                 runId,
                                 regionKey: key,
@@ -1342,6 +1588,17 @@ export const paginate = ({
                     homeRegionKey: entry.homeRegionKey,
                     cursorOffset: cursor.currentOffset,
                 });
+
+                // Cursor debug: Log cursor position when component is dequeued
+                if (isCursorDebugEnabled()) {
+                    logPaginationDecision(runId, 'cursor-at-dequeue', {
+                        regionKey: key,
+                        componentId: entry.instance.id,
+                        cursorOffset: cursor.currentOffset,
+                        cursorMaxHeight: cursor.maxHeight,
+                        queueRemaining: regionQueue.length,
+                    });
+                }
 
                 // Component-5/6 specific dequeued logging
                 if (isPaginationDebugEnabled() && (entry.instance.id === 'component-5' || entry.instance.id === 'component-6')) {
@@ -1566,7 +1823,7 @@ export const paginate = ({
                             });
                         }
 
-                        if (nextRegion && ensurePage(pages, nextRegion.pageNumber, columnCount, pendingQueues)) {
+                        if (nextRegion && ensurePage(pages, nextRegion.pageNumber, columnCount, pendingQueues, runId, 'route-overflow-already-placed')) {
                             const routeKey = `${entry.instance.id}:${nextRegion.key}`;
                             if (!routedInRegion.has(routeKey)) {
                                 const followUp: CanvasLayoutEntry = {
@@ -1646,14 +1903,26 @@ export const paginate = ({
                     // Otherwise, subsequent entries will be placed at incorrect positions
                     if (entryBottomWithSpacing > cursor.currentOffset) {
                         cursor.currentOffset = entryBottomWithSpacing;
-                        debugLog(entry.instance.id, '🔧', 'cursor-advanced-for-skipped-entry', {
-                            runId,
-                            regionKey: key,
-                            entrySpanBottom: entryBottom,
-                            cursorBefore: prevCursorOffset,
-                            cursorAfter: cursor.currentOffset,
-                            cursorAdvance: cursor.currentOffset - prevCursorOffset,
-                        });
+                        if (isCursorDebugEnabled()) {
+                            // Cursor debug: Always log cursor advancement when cursor flag enabled
+                            logPaginationDecision(runId, 'cursor-advanced-for-already-placed-entry', {
+                                regionKey: key,
+                                componentId: entry.instance.id,
+                                entrySpanBottom: entryBottom,
+                                cursorBefore: prevCursorOffset,
+                                cursorAfter: cursor.currentOffset,
+                                cursorAdvance: cursor.currentOffset - prevCursorOffset,
+                            });
+                        } else if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                            debugLog(entry.instance.id, '🔧', 'cursor-advanced-for-skipped-entry', {
+                                runId,
+                                regionKey: key,
+                                entrySpanBottom: entryBottom,
+                                cursorBefore: prevCursorOffset,
+                                cursorAfter: cursor.currentOffset,
+                                cursorAdvance: cursor.currentOffset - prevCursorOffset,
+                            });
+                        }
                     }
 
                     // CRITICAL FIX: Update or add entry to columnEntries
@@ -1928,6 +2197,18 @@ export const paginate = ({
                         overflows: entryOverflows,
                         overflowAmount: entryOverflows ? entryBottom - regionHeightPx : 0,
                     });
+
+                    // Cursor debug: Log cursor advancement for already-placed entries
+                    if (isCursorDebugEnabled() && cursor.currentOffset > prevCursorOffset) {
+                        logPaginationDecision(runId, 'cursor-advanced-for-skip-already-placed', {
+                            regionKey: key,
+                            componentId: entry.instance.id,
+                            entrySpanBottom: entryBottom,
+                            cursorBefore: prevCursorOffset,
+                            cursorAfter: cursor.currentOffset,
+                            cursorAdvance: cursor.currentOffset - prevCursorOffset,
+                        });
+                    }
                     continue;
                 }
 
@@ -2081,19 +2362,25 @@ export const paginate = ({
 
                     // Component-5 placement logging
                     if (isPaginationDebugEnabled() && entry.instance.id === 'component-5') {
+                        const spanBottom = entry.span?.bottom ?? span.bottom;
+                        const actuallyOverflows = spanBottom > regionHeightPx;
                         debugLog('component-5', '✅', 'component-5-placed', {
                             runId,
                             regionKey: key,
                             page: page.pageNumber,
                             column: column.columnNumber,
                             spanTop: entry.span?.top ?? span.top,
-                            spanBottom: entry.span?.bottom ?? span.bottom,
+                            spanBottom,
                             spanHeight: entry.span?.height ?? span.height,
                             cursorBefore: prevOffset,
                             cursorAfter: cursor.currentOffset,
                             regionHeightPx,
-                            overflows: (entry.span?.bottom ?? span.bottom) > regionHeightPx,
-                            overflowAmount: (entry.span?.bottom ?? span.bottom) - regionHeightPx,
+                            // FIX: Only report overflow if component actually exceeds region height
+                            // This was incorrectly reporting overflow even when component fits
+                            overflows: actuallyOverflows,
+                            overflowAmount: actuallyOverflows ? spanBottom - regionHeightPx : 0,
+                            fits: !actuallyOverflows,
+                            availableSpace: regionHeightPx - spanBottom,
                         });
                     }
 
@@ -2128,6 +2415,18 @@ export const paginate = ({
                         cursorAdvance: cursor.currentOffset - prevOffset,
                         remainingSpace: cursor.maxHeight - cursor.currentOffset,
                     });
+
+                    // Cursor debug: Log cursor advancement during normal placement
+                    if (isCursorDebugEnabled() && cursor.currentOffset > prevOffset) {
+                        logPaginationDecision(runId, 'cursor-advanced-for-placed-entry', {
+                            regionKey: key,
+                            componentId: entry.instance.id,
+                            spanBottom: span.bottom,
+                            cursorBefore: prevOffset,
+                            cursorAfter: cursor.currentOffset,
+                            cursorAdvance: cursor.currentOffset - prevOffset,
+                        });
+                    }
                     continue;
                 }
 
@@ -2210,6 +2509,8 @@ export const paginate = ({
 
                 const nextRegion = findNextRegion(pages, key);
                 if (debugQueueEntry) {
+                    // FIX: Log next-region-snapshot with context that this is informational,
+                    // not indicating where the current component was placed
                     debugLog(debugQueueEntry.instance.id, '🧮', 'next-region-snapshot', {
                         runId,
                         from: key,
@@ -2217,6 +2518,7 @@ export const paginate = ({
                         nextRegionPage: nextRegion?.pageNumber ?? null,
                         nextRegionColumn: nextRegion?.columnNumber ?? null,
                         totalPages: pages.length,
+                        note: 'Informational: shows next region if overflow occurs, not actual placement',
                     });
                 }
 
@@ -2258,21 +2560,62 @@ export const paginate = ({
                     // the overflow version gets re-enqueued forever and the paginator never advances.
                     // Keep this note because removing it caused an infinite loop earlier.
                     const routeOverflowToNextRegion = ({ allowOverflowReroute = false, forceAdvance = false }: { allowOverflowReroute?: boolean; forceAdvance?: boolean } = {}): string | null => {
-                        const alreadyRerouted = entry.overflowRouted ?? false;
+                        let alreadyRerouted = entry.overflowRouted ?? false;
+                        const isOverflowingFromHomeRegion = entry.homeRegionKey === key;
+
+                        // CRITICAL FIX: Reset already-rerouted flag if region height changed significantly
+                        // This allows re-routing when region height drops (e.g., component-10 split segment invalidation)
+                        const regionHeightChanged = lastRegionHeightPx !== null && Math.abs(lastRegionHeightPx - regionHeightPx) > SIGNIFICANT_REGION_HEIGHT_CHANGE_PX;
+                        if (alreadyRerouted && regionHeightChanged) {
+                            if (isPaginationDebugEnabled()) {
+                                debugLog(entry.instance.id, '🔄', 'already-rerouted-reset-region-height-changed', {
+                                    runId,
+                                    regionKey: key,
+                                    previousRegionHeight: lastRegionHeightPx,
+                                    currentRegionHeight: regionHeightPx,
+                                    heightDiff: lastRegionHeightPx !== null ? regionHeightPx - lastRegionHeightPx : 0,
+                                    threshold: SIGNIFICANT_REGION_HEIGHT_CHANGE_PX,
+                                    reason: 'Region height changed significantly, allowing re-routing',
+                                });
+                            }
+                            alreadyRerouted = false; // Reset flag to allow re-routing
+                        }
 
                         debugLog(entry.instance.id, '🧭', 'route-overflow-start', {
                             runId,
                             regionKey: key,
+                            homeRegionKey: entry.homeRegionKey,
+                            isOverflowingFromHomeRegion,
                             allowOverflowReroute,
                             forceAdvance,
                             alreadyRerouted,
+                            regionHeightChanged,
                         });
 
-                        let candidateRegion = findNextRegion(pages, key);
+                        // CRITICAL: If component is overflowing from its home region, prefer the other column
+                        // on the same page instead of advancing to the next page. This prevents components
+                        // from being incorrectly routed to page 2 when they should be in column 2 of page 1.
+                        let candidateRegion: RegionPosition | null = null;
+                        if (isOverflowingFromHomeRegion && columnCount > 1) {
+                            candidateRegion = findOtherColumnOnSamePage(pages, key);
+                            if (candidateRegion && process.env.NODE_ENV !== 'production') {
+                                debugLog(entry.instance.id, '🏠', 'route-overflow-prefer-home-page-column', {
+                                    runId,
+                                    from: key,
+                                    to: candidateRegion.key,
+                                    reason: 'overflowing-from-home-region',
+                                });
+                            }
+                        }
+
+                        // Fall back to sequential next region if no same-page column found
+                        if (!candidateRegion) {
+                            candidateRegion = findNextRegion(pages, key);
+                        }
 
                         if (!candidateRegion && forceAdvance) {
                             const newPageNumber = pages.length + 1;
-                            if (!ensurePage(pages, newPageNumber, columnCount, pendingQueues)) {
+                            if (!ensurePage(pages, newPageNumber, columnCount, pendingQueues, runId, 'force-advance-overflow')) {
                                 // Hit MAX_PAGES limit, stop pagination
                                 return null;
                             }
@@ -2293,7 +2636,7 @@ export const paginate = ({
                             return null;
                         }
 
-                        if (!ensurePage(pages, candidateRegion.pageNumber, columnCount, pendingQueues)) {
+                        if (!ensurePage(pages, candidateRegion.pageNumber, columnCount, pendingQueues, runId, 'route-overflow-to-next-region')) {
                             // Hit MAX_PAGES limit, stop pagination
                             return null;
                         }
@@ -2491,7 +2834,7 @@ export const paginate = ({
 
                     if (!nextRegion) {
                         const newPageNumber = pages.length + 1;
-                        if (!ensurePage(pages, newPageNumber, columnCount, pendingQueues)) {
+                        if (!ensurePage(pages, newPageNumber, columnCount, pendingQueues, runId, 'overflow-no-next-region')) {
                             // Hit MAX_PAGES limit, stop pagination
                             break;
                         }
@@ -2577,7 +2920,7 @@ export const paginate = ({
                         continue;
                     }
 
-                    if (!ensurePage(pages, updatedNextRegion.pageNumber, columnCount, pendingQueues)) {
+                    if (!ensurePage(pages, updatedNextRegion.pageNumber, columnCount, pendingQueues, runId, 'route-remaining-after-overflow')) {
                         // Hit MAX_PAGES limit, stop pagination
                         break;
                     }
@@ -2665,7 +3008,7 @@ export const paginate = ({
                         const candidate = findNextRegion(pages, key);
                         if (!candidate) {
                             const newPageNumber = pages.length + 1;
-                            if (!ensurePage(pages, newPageNumber, columnCount, pendingQueues)) {
+                            if (!ensurePage(pages, newPageNumber, columnCount, pendingQueues, runId, 'reroute-empty-split')) {
                                 return null;
                             }
                             return findNextRegion(pages, key)?.key ?? null;
@@ -2833,7 +3176,7 @@ export const paginate = ({
                 if (remainingItems.length > 0) {
                     if (!nextRegion) {
                         const newPageNumber = pages.length + 1;
-                        if (!ensurePage(pages, newPageNumber, columnCount, pendingQueues)) {
+                        if (!ensurePage(pages, newPageNumber, columnCount, pendingQueues, runId, 'split-remaining-no-next-region')) {
                             // Hit MAX_PAGES limit, mark as overflow and stop
                             columnEntries[columnEntries.length - 1] = {
                                 ...columnEntries[columnEntries.length - 1],
@@ -2863,7 +3206,7 @@ export const paginate = ({
                         continue;
                     }
 
-                    if (!ensurePage(pages, updatedNextRegion.pageNumber, columnCount, pendingQueues)) {
+                    if (!ensurePage(pages, updatedNextRegion.pageNumber, columnCount, pendingQueues, runId, 'split-remaining-route-to-next')) {
                         // Hit MAX_PAGES limit, mark as overflow and stop
                         columnEntries[columnEntries.length - 1] = {
                             ...columnEntries[columnEntries.length - 1],
@@ -2950,6 +3293,25 @@ export const paginate = ({
                             .filter(({ entry }) => entry.instance.id === debugEntry.instance.id)
                             .map(({ idx }) => idx),
                     });
+                });
+            }
+
+            // Debug: Log columnEntries before assignment to column.entries (gated behind plan-commit flag)
+            if (isPaginationDebugEnabled() && isDebugEnabled('plan-commit') && columnEntries.some(e => e.instance.id === 'component-05' || e.instance.id === 'component-5')) {
+                const component05InColumnEntries = columnEntries.find(e => e.instance.id === 'component-05' || e.instance.id === 'component-5');
+                logPaginationDecision(runId, 'column-entries-before-assignment', {
+                    regionKey: key,
+                    page: page.pageNumber,
+                    column: column.columnNumber,
+                    columnEntriesCount: columnEntries.length,
+                    component05Found: !!component05InColumnEntries,
+                    component05Details: component05InColumnEntries ? {
+                        id: component05InColumnEntries.instance.id,
+                        spanTop: component05InColumnEntries.span?.top,
+                        spanBottom: component05InColumnEntries.span?.bottom,
+                        region: component05InColumnEntries.region,
+                    } : null,
+                    allEntryIds: columnEntries.map(e => e.instance.id),
                 });
             }
 

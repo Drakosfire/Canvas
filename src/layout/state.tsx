@@ -29,6 +29,13 @@ import {
     regionKey,
 } from './utils';
 import { isDebugEnabled } from './debugFlags';
+import { logRegionHeightEvent } from './regionHeightDebug';
+
+const shouldLogPlanCommit = (): boolean => isDebugEnabled('plan-commit');
+
+// Track processed measurement versions to prevent duplicate MEASUREMENT_COMPLETE dispatches
+// (React StrictMode causes double dispatches before state updates)
+const processedMeasurementVersions = new Set<number>();
 
 // Diagnostic: Log when state.tsx loads (confirms module is loading)
 if (typeof window !== 'undefined') {
@@ -166,7 +173,10 @@ type CanvasLayoutAction =
     | { type: 'SET_REGISTRY'; payload: { registry: Record<string, ComponentRegistryEntry> } }
     | { type: 'SET_PAGE_VARIABLES'; payload: { pageVariables: PageVariables; columnCount: number; regionHeightPx: number; pageWidthPx: number; pageHeightPx: number; baseDimensions: ReturnType<typeof computeBasePageDimensions> } }
     | { type: 'SET_REGION_HEIGHT'; payload: { regionHeightPx: number } }
+    | { type: 'MEASUREMENT_START' }
     | { type: 'MEASUREMENTS_UPDATED'; payload: { measurements: MeasurementRecord[] } }
+    | { type: 'MEASUREMENT_COMPLETE'; payload: { measurementVersion: number } }
+    | { type: 'REQUEST_REMEASURE'; payload: { componentIds: string[] } }
     | { type: 'RECALCULATE_LAYOUT' }
     | { type: 'COMMIT_LAYOUT' };
 
@@ -195,14 +205,25 @@ const parseBooleanFlag = (value?: string | null): boolean | undefined => {
     return undefined;
 };
 
-const resolveColumnCacheFlag = (): boolean => {
-    if (typeof process !== 'undefined' && typeof process.env !== 'undefined') {
-        const reactAppValue = process.env.REACT_APP_CANVAS_COLUMN_CACHE;
-        const parsedReact = parseBooleanFlag(reactAppValue);
-        if (parsedReact !== undefined) {
-            return parsedReact;
-        }
+const readReactAppColumnCacheFlag = (): string | undefined => {
+    try {
+        // React Scripts (and other bundlers) replace REACT_APP_* variables at build time.
+        // Accessing process.env directly ensures the substitution happens even when "process"
+        // is undefined at runtime in the browser.
+        return process.env.REACT_APP_CANVAS_COLUMN_CACHE;
+    } catch {
+        return undefined;
+    }
+};
 
+const resolveColumnCacheFlag = (): boolean => {
+    const reactAppValue = readReactAppColumnCacheFlag();
+    const parsedReact = parseBooleanFlag(reactAppValue);
+    if (parsedReact !== undefined) {
+        return parsedReact;
+    }
+
+    if (typeof process !== 'undefined' && typeof process.env !== 'undefined') {
         const nodeValue = process.env.CANVAS_COLUMN_CACHE;
         const parsedNode = parseBooleanFlag(nodeValue);
         if (parsedNode !== undefined) {
@@ -213,9 +234,7 @@ const resolveColumnCacheFlag = (): boolean => {
     return true; // Default: enabled
 };
 
-const envColumnCacheEnabled = resolveColumnCacheFlag();
-const debugColumnCacheDisabled = isDebugEnabled('column-cache-disabled');
-const COLUMN_CACHE_ENABLED = envColumnCacheEnabled && !debugColumnCacheDisabled;
+const COLUMN_CACHE_ENABLED = resolveColumnCacheFlag();
 let columnCacheFlagLogged = false;
 
 const logColumnCacheDisabledOnce = () => {
@@ -257,6 +276,7 @@ export const createInitialState = (): CanvasLayoutState => ({
     measurementStabilityThreshold: MEASUREMENT_STABILITY_THRESHOLD_MS,
     regionHeightLastUpdateTime: 0,
     regionHeightStabilityThreshold: REGION_HEIGHT_STABILITY_THRESHOLD_MS,
+    measurementStatus: 'idle' as import('./types').MeasurementStatus,
 });
 
 const upsertRegionAssignment = (assignedRegions: Map<string, SlotAssignment>, entry: SlotAssignment, instanceId: string) => {
@@ -525,6 +545,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 missingMeasurementKeys: missingKeys,
                 columnMeasurementCache: columnCache,
                 isLayoutDirty: false, // Don't trigger pagination yet
+                measurementStatus: 'measuring' as import('./types').MeasurementStatus,
             };
         }
 
@@ -572,6 +593,9 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             requiredMeasurementKeys: requiredKeys,
             missingMeasurementKeys: missingKeys,
             columnMeasurementCache: columnCache,
+            measurementStatus: (missingKeys.size === 0 && allMeasured)
+                ? ('complete' as import('./types').MeasurementStatus)
+                : (base.measurementStatus ?? ('idle' as import('./types').MeasurementStatus)),
         };
     };
 
@@ -644,11 +668,16 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
         case 'SET_PAGE_VARIABLES':
             logLayoutDirty('SET_PAGE_VARIABLES', { measurementVersion: state.measurementVersion });
             logIsLayoutDirtySet('SET_PAGE_VARIABLES', { measurementVersion: state.measurementVersion });
+            // Fallback: ensure regionHeightPx has a usable value immediately from baseDimensions
+            const incomingBase = action.payload.baseDimensions;
+            const incomingHeight = action.payload.regionHeightPx > 0
+                ? action.payload.regionHeightPx
+                : (incomingBase ? incomingBase.contentHeightPx : 0);
             return recomputeEntries({
                 ...state,
                 pageVariables: action.payload.pageVariables,
                 columnCount: action.payload.columnCount,
-                regionHeightPx: action.payload.regionHeightPx,
+                regionHeightPx: incomingHeight || state.regionHeightPx,
                 pageWidthPx: action.payload.pageWidthPx,
                 pageHeightPx: action.payload.pageHeightPx,
                 baseDimensions: action.payload.baseDimensions,
@@ -656,11 +685,24 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             });
         case 'SET_REGION_HEIGHT': {
             const incomingHeight = action.payload.regionHeightPx;
+            if (incomingHeight <= 0 || Number.isNaN(incomingHeight)) {
+                logRegionHeightEvent('set-region-height-invalid', {
+                    previousHeight: state.regionHeightPx,
+                    incomingHeight,
+                });
+                return state;
+            }
+
             const nextHeight =
                 state.regionHeightPx <= 0 ? incomingHeight : Math.min(state.regionHeightPx, incomingHeight);
             const heightDiff = Math.abs(state.regionHeightPx - nextHeight);
 
             if (heightDiff < 1) {
+                logRegionHeightEvent('set-region-height-skipped', {
+                    previousHeight: state.regionHeightPx,
+                    incomingHeight,
+                    heightDiff,
+                });
                 if (process.env.NODE_ENV !== 'production' && incomingHeight < state.regionHeightPx) {
                     // eslint-disable-next-line no-console
                     console.log('[CanvasLayout] Region height ignored (diff too small)', {
@@ -716,6 +758,19 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             // Wait for current pagination to complete before triggering again
             const canTriggerPagination = shouldTriggerPagination && !state.pendingLayout;
 
+            logRegionHeightEvent('set-region-height-applied', {
+                previousHeight: state.regionHeightPx,
+                nextHeight,
+                incomingHeight,
+                heightDiff,
+                timeSinceLastUpdate,
+                isStable,
+                isSignificantChange,
+                shouldTriggerPagination,
+                canTriggerPagination,
+                pendingLayoutExists: Boolean(state.pendingLayout),
+            });
+
             if (shouldTriggerPagination) {
                 logIsLayoutDirtySet('SET_REGION_HEIGHT', {
                     previousHeight: state.regionHeightPx,
@@ -735,6 +790,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             };
         }
         case 'MEASUREMENTS_UPDATED': {
+            // In publish-once mode for this spike branch, we ignore mid-stream pagination triggers.
             const measurements = new Map(state.measurements);
             let didChange = false;
             let hasAdditions = false;
@@ -743,8 +799,8 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             action.payload.measurements.forEach(({ key, height, measuredAt }) => {
                 const previous = state.measurements.get(key);
 
-                // Height of 0 is treated as explicit deletion
-                if (height <= 0) {
+                // Negative height is treated as explicit deletion (zero is valid metadata height)
+                if (height < 0) {
                     if (measurements.has(key)) {
                         measurements.delete(key);
                         didChange = true;
@@ -831,20 +887,43 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             }
 
             // Update state with new measurements first
+            // CRITICAL: If MEASUREMENT_COMPLETE already fired (measurementStatus === 'complete'),
+            // don't overwrite waitingForInitialMeasurements or measurementStatus - pagination is in progress
+            const measurementCompleteAlreadyFired = state.measurementStatus === 'complete';
+            if (process.env.NODE_ENV !== 'production' && measurementCompleteAlreadyFired) {
+                // eslint-disable-next-line no-console
+                console.log('🛡️ [MEASUREMENTS_UPDATED] Preserving complete state (pagination in progress)', {
+                    previousStatus: state.measurementStatus,
+                    previousWaitingForInitialMeasurements: state.waitingForInitialMeasurements,
+                    previousIsLayoutDirty: state.isLayoutDirty,
+                    allMeasured,
+                    missingKeysCount: missingKeys.size,
+                });
+            }
             const updatedState = {
                 ...state,
                 measurements,
                 measurementVersion: nextVersion,
                 allComponentsMeasured: allMeasured,
-                waitingForInitialMeasurements: wasWaitingForMeasurements && !allMeasured,
+                // Only update waitingForInitialMeasurements if MEASUREMENT_COMPLETE hasn't fired yet
+                // Once complete, preserve the false value to allow pagination
+                waitingForInitialMeasurements: measurementCompleteAlreadyFired
+                    ? state.waitingForInitialMeasurements
+                    : (wasWaitingForMeasurements && !allMeasured),
                 missingMeasurementKeys: missingKeys,
                 columnMeasurementCache: updatedCache,
+                // Only mark complete when EVERYTHING is measured
+                // But preserve 'complete' status if MEASUREMENT_COMPLETE already fired
+                measurementStatus: measurementCompleteAlreadyFired
+                    ? state.measurementStatus
+                    : ((missingKeys.size === 0 && allMeasured)
+                        ? ('complete' as import('./types').MeasurementStatus)
+                        : ('measuring' as import('./types').MeasurementStatus)),
             };
 
-            // If we just completed initial measurements OR have new measurements, rebuild entries
-            // Also rebuild if we're transitioning from waiting to not waiting (initial render)
+            // Rebuild entries only when we are fully complete
             const isTransitioningFromWaiting = wasWaitingForMeasurements && !updatedState.waitingForInitialMeasurements;
-            const shouldRebuild = nowComplete || hasAdditions || isTransitioningFromWaiting;
+            const shouldRebuild = (missingKeys.size === 0 && allMeasured) || isTransitioningFromWaiting;
 
             if (shouldRebuild) {
                 const recomputed = recomputeEntries({
@@ -852,8 +931,8 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                     assignedRegions: state.assignedRegions,
                 });
 
-                // Check if columns are ready for pagination (after rebuild)
-                const readyColumnsAfterRebuild = columnCacheEnabled
+                // Disable column cache triggers during measuring; only allow when complete
+                const readyColumnsAfterRebuild = (updatedState.measurementStatus === 'complete' && columnCacheEnabled)
                     ? getReadyColumns(
                         recomputed.columnMeasurementCache,
                         recomputed.measurementStabilityThreshold,
@@ -862,42 +941,22 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                     : new Set<string>();
 
                 // CRITICAL: Column cache optimization reduces pagination runs
-                // For initial render, we should paginate if:
-                // 1. Initial measurements complete (nowComplete), OR
-                // 2. We transitioned from waiting to not waiting (initial render), OR
-                // 3. We have new measurements AND still waiting for initial measurements (hasAdditions during initial load), OR
-                // 4. Columns are ready (optimization - primary path after initial render)
-                const isInitialRender = wasWaitingForMeasurements && !updatedState.waitingForInitialMeasurements;
-                const hasMeasurements = measurements.size > 0;
+                // Trigger pagination only when complete or cache-ready post-complete
+                let shouldTriggerPagination =
+                    updatedState.measurementStatus === 'complete' &&
+                    (readyColumnsAfterRebuild.size > 0 || nowComplete || isTransitioningFromWaiting);
 
-                // CRITICAL FIX: Only trigger on new measurements during initial render
-                // After initial render completes, rely solely on column cache readiness
-                // This prevents pagination from triggering on every measurement update
-                const shouldTriggerOnNewMeasurements = hasAdditions && hasMeasurements && wasWaitingForMeasurements;
-
-                // Trigger pagination if:
-                // - Initial measurements complete, OR
-                // - This is initial render (was waiting, now not), OR  
-                // - We have new measurements during initial load (still waiting), OR
-                // - Columns are ready (optimization - primary path after initial render)
-                const shouldTriggerPagination = columnCacheEnabled
-                    ? (
-                        nowComplete ||
-                        isInitialRender ||
-                        shouldTriggerOnNewMeasurements ||
-                        readyColumnsAfterRebuild.size > 0
-                    )
-                    : (
-                        nowComplete ||
-                        isInitialRender ||
-                        hasAdditions
-                    );
+                // Ensure we have a valid regionHeight before attempting to paginate
+                let nextRegionHeightPx = recomputed.regionHeightPx;
+                if (shouldTriggerPagination && nextRegionHeightPx <= 0 && recomputed.baseDimensions) {
+                    nextRegionHeightPx = recomputed.baseDimensions.contentHeightPx;
+                    shouldTriggerPagination = nextRegionHeightPx > 0;
+                }
 
                 const triggerReason = (() => {
+                    if (updatedState.measurementStatus !== 'complete') return 'measuring';
                     if (nowComplete) return 'initial-measurements-complete';
-                    if (isInitialRender) return 'initial-render';
-                    if (!columnCacheEnabled && hasAdditions) return 'column-cache-disabled';
-                    if (shouldTriggerOnNewMeasurements) return 'new-measurements-added';
+                    if (isTransitioningFromWaiting) return 'initial-render';
                     if (readyColumnsAfterRebuild.size > 0) return 'columns-ready';
                     return 'waiting-for-columns';
                 })();
@@ -909,11 +968,8 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                         shouldTrigger: shouldTriggerPagination,
                         readyColumns: Array.from(readyColumnsAfterRebuild),
                         nowComplete,
-                        isInitialRender,
+                        isInitialRender: isTransitioningFromWaiting,
                         wasWaitingForMeasurements,
-                        hasMeasurements,
-                        hasAdditions,
-                        shouldTriggerOnNewMeasurements,
                         cacheSize: recomputed.columnMeasurementCache.size,
                         columnCacheEnabled,
                         reason: shouldTriggerPagination ? triggerReason : 'waiting-for-columns',
@@ -953,7 +1009,6 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                     logIsLayoutDirtySet('MEASUREMENTS_UPDATED', {
                         reason: triggerReason,
                         readyColumns: Array.from(readyColumnsAfterRebuild),
-                        hasAdditions,
                         wasWaitingForMeasurements,
                         pendingLayoutExists: Boolean(state.pendingLayout),
                         willTrigger: canTriggerPagination,
@@ -961,25 +1016,174 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 }
                 return {
                     ...recomputed,
-                    isLayoutDirty: canTriggerPagination,
+                    regionHeightPx: nextRegionHeightPx,
+                    // CRITICAL: If MEASUREMENT_COMPLETE already fired, preserve isLayoutDirty to allow pagination
+                    // Otherwise, use canTriggerPagination
+                    isLayoutDirty: measurementCompleteAlreadyFired
+                        ? (state.isLayoutDirty || canTriggerPagination)
+                        : canTriggerPagination,
                     pendingLayout: null,
                 };
             }
 
-            // For deletions only, just update measurements without rebuilding entries
-            // CRITICAL FIX: Don't trigger pagination for deletions-only updates
-            // This prevents feedback loop when measurements are removed/re-added between pagination runs
-            // Pagination will be triggered by the next meaningful measurement update (additions or rebuild)
+            // Measuring but not complete: update measurements only, don't trigger pagination
+            // CRITICAL: If MEASUREMENT_COMPLETE already fired, preserve isLayoutDirty to allow pagination
             return {
                 ...updatedState,
-                isLayoutDirty: false, // Don't trigger pagination for deletions-only
+                isLayoutDirty: measurementCompleteAlreadyFired ? state.isLayoutDirty : false,
                 pendingLayout: null,
+            };
+        }
+        case 'REQUEST_REMEASURE': {
+            // Delete measurements for specified components and mark status as measuring
+            const nextMeasurements = new Map(state.measurements);
+            const ids = new Set(action.payload.componentIds);
+            Array.from(nextMeasurements.keys()).forEach((key) => {
+                const idMatch = key.match(/^(component-\d+):/);
+                const compId = idMatch ? idMatch[1] : null;
+                if (compId && ids.has(compId)) {
+                    nextMeasurements.delete(key);
+                }
+            });
+            // Recompute missing keys with updated map
+            const missing = computeMissingMeasurementKeys(state.requiredMeasurementKeys, nextMeasurements);
+            return {
+                ...state,
+                measurements: nextMeasurements,
+                measurementStatus: 'measuring' as import('./types').MeasurementStatus,
+                waitingForInitialMeasurements: true,
+                missingMeasurementKeys: missing,
+                isLayoutDirty: false,
+            };
+        }
+        case 'MEASUREMENT_START': {
+            // Explicitly signal that measurement phase has begun
+            if (state.measurementStatus === 'measuring') {
+                // Already measuring, no change needed
+                return state;
+            }
+            if (process.env.NODE_ENV !== 'production') {
+                // eslint-disable-next-line no-console
+                console.log('🧭 [Layout] MEASUREMENT_START', {
+                    previousStatus: state.measurementStatus,
+                });
+            }
+            return {
+                ...state,
+                measurementStatus: 'measuring' as import('./types').MeasurementStatus,
+                // Don't reset version - keep incrementing
+            };
+        }
+        case 'MEASUREMENT_COMPLETE': {
+            const version = action.payload.measurementVersion;
+            const alreadyProcessed = processedMeasurementVersions.has(version);
+
+            if (alreadyProcessed) {
+                if (process.env.NODE_ENV !== 'production') {
+                    // eslint-disable-next-line no-console
+                    console.log('⏭️ [Layout] MEASUREMENT_COMPLETE skipped - duplicate version', {
+                        measurementVersion: version,
+                        currentStatus: state.measurementStatus,
+                        currentVersion: state.measurementVersion,
+                        isLayoutDirty: state.isLayoutDirty,
+                    });
+                }
+
+                // If state already reflects this completion, exit immediately (prevents duplicate pagination)
+                if (state.measurementStatus === 'complete' && state.measurementVersion === version) {
+                    return state;
+                }
+
+                // Recovery path: state hasn't been marked complete yet, so fall through to finish the transition
+                // We do NOT re-add to processedMeasurementVersions to avoid unbounded growth
+            } else {
+                processedMeasurementVersions.add(version);
+                // Clean up old versions (keep last 10 to prevent memory leak)
+                if (processedMeasurementVersions.size > 10) {
+                    const sorted = Array.from(processedMeasurementVersions).sort((a, b) => a - b);
+                    const toRemove = sorted.slice(0, sorted.length - 10);
+                    toRemove.forEach(v => processedMeasurementVersions.delete(v));
+                }
+            }
+            if (process.env.NODE_ENV !== 'production') {
+                // eslint-disable-next-line no-console
+                console.log('🧭 [Layout] MEASUREMENT_COMPLETE -> RECALCULATE_LAYOUT', {
+                    measurementVersion: action.payload.measurementVersion,
+                    previousVersion: state.measurementVersion,
+                    previousStatus: state.measurementStatus,
+                });
+            }
+            // Set regionHeightPx from baseDimensions if it's still <= 0
+            let nextRegionHeightPx = state.regionHeightPx;
+            if (nextRegionHeightPx <= 0 && state.baseDimensions) {
+                nextRegionHeightPx = state.baseDimensions.contentHeightPx;
+                if (process.env.NODE_ENV !== 'production') {
+                    // eslint-disable-next-line no-console
+                    console.log('🧭 [Layout] MEASUREMENT_COMPLETE: Set regionHeightPx from baseDimensions', {
+                        regionHeightPx: nextRegionHeightPx,
+                    });
+                }
+            }
+            // CRITICAL: Rebuild buckets before triggering pagination
+            // This ensures buckets are built even if MEASUREMENTS_UPDATED hasn't finished processing
+            const updatedState = {
+                ...state,
+                measurementStatus: 'complete' as import('./types').MeasurementStatus,
+                measurementVersion: action.payload.measurementVersion,
+                waitingForInitialMeasurements: false,
+                regionHeightPx: nextRegionHeightPx,
+            };
+            // Rebuild entries to ensure buckets are populated
+            const recomputed = recomputeEntries({
+                ...updatedState,
+                assignedRegions: state.assignedRegions,
+            });
+            if (process.env.NODE_ENV !== 'production') {
+                const bucketKeys = Array.from(recomputed.buckets.keys());
+                const bucketSizes = bucketKeys.map(key => ({
+                    key,
+                    entryCount: recomputed.buckets.get(key)?.length ?? 0,
+                }));
+                // eslint-disable-next-line no-console
+                console.log('🧭 [Layout] MEASUREMENT_COMPLETE: Rebuilt buckets', {
+                    bucketCount: recomputed.buckets.size,
+                    bucketSizes,
+                    totalEntries: bucketSizes.reduce((sum, b) => sum + b.entryCount, 0),
+                });
+            }
+            return {
+                ...recomputed,
+                isLayoutDirty: true, // Trigger a layout recalculation
             };
         }
         case 'RECALCULATE_LAYOUT': {
             // Don't paginate if we're waiting for initial measurements
-            if (state.waitingForInitialMeasurements) {
+            // UNLESS isLayoutDirty is true (MEASUREMENT_COMPLETE set it, signaling pagination should run)
+            // OR measurementStatus is 'complete' (MEASUREMENT_COMPLETE already fired)
+            // This handles the case where MEASUREMENT_COMPLETE sets waitingForInitialMeasurements: false,
+            // but then new measurements arrive and set it back to true before RECALCULATE_LAYOUT runs
+            if (state.waitingForInitialMeasurements && !state.isLayoutDirty && state.measurementStatus !== 'complete') {
+                if (process.env.NODE_ENV !== 'production') {
+                    // eslint-disable-next-line no-console
+                    console.log('[RECALCULATE_LAYOUT] Skipping - waitingForInitialMeasurements', {
+                        waitingForInitialMeasurements: state.waitingForInitialMeasurements,
+                        isLayoutDirty: state.isLayoutDirty,
+                        measurementStatus: state.measurementStatus,
+                    });
+                }
                 return state;
+            }
+            // Gate by publish-once status: only paginate when complete
+            // UNLESS isLayoutDirty is true (MEASUREMENT_COMPLETE explicitly triggered pagination)
+            if (state.measurementStatus && state.measurementStatus !== 'complete' && !state.isLayoutDirty) {
+                if (process.env.NODE_ENV !== 'production') {
+                    // eslint-disable-next-line no-console
+                    console.log('[RECALCULATE_LAYOUT] Skipping - measurementStatus not complete', {
+                        measurementStatus: state.measurementStatus,
+                        isLayoutDirty: state.isLayoutDirty,
+                    });
+                }
+                return { ...state, isLayoutDirty: false };
             }
 
             // CRITICAL: Don't paginate if there's already a pending layout
@@ -997,10 +1201,23 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             }
 
             if (!state.template || !state.pageVariables) {
+                if (process.env.NODE_ENV !== 'production') {
+                    // eslint-disable-next-line no-console
+                    console.log('[RECALCULATE_LAYOUT] Skipping - missing template or pageVariables', {
+                        hasTemplate: !!state.template,
+                        hasPageVariables: !!state.pageVariables,
+                    });
+                }
                 return state;
             }
 
             if (state.regionHeightPx <= 0) {
+                if (process.env.NODE_ENV !== 'production') {
+                    // eslint-disable-next-line no-console
+                    console.log('[RECALCULATE_LAYOUT] Skipping - regionHeightPx <= 0', {
+                        regionHeightPx: state.regionHeightPx,
+                    });
+                }
                 return state;
             }
 
@@ -1011,6 +1228,23 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                     topMarginPx: state.baseDimensions.topMarginPx,
                 }
                 : null;
+
+            // Debug: Log bucket state before pagination
+            if (process.env.NODE_ENV !== 'production') {
+                const bucketKeys = Array.from(state.buckets.keys());
+                const bucketSizes = bucketKeys.map(key => ({
+                    key,
+                    entryCount: state.buckets.get(key)?.length ?? 0,
+                }));
+                // eslint-disable-next-line no-console
+                console.log('[RECALCULATE_LAYOUT] Paginating with buckets:', {
+                    bucketCount: state.buckets.size,
+                    bucketSizes,
+                    totalEntries: bucketSizes.reduce((sum, b) => sum + b.entryCount, 0),
+                    columnCount: state.columnCount,
+                    regionHeightPx: state.regionHeightPx,
+                });
+            }
 
             const pendingLayout = paginate({
                 buckets: state.buckets,
@@ -1024,6 +1258,21 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 segmentRerouteCache: state.segmentRerouteCache,
                 previousPlan: state.layoutPlan,
             });
+
+            // Debug: Log pagination result
+            if (process.env.NODE_ENV !== 'production') {
+                const page1Col1Entries = pendingLayout.pages[0]?.columns[0]?.entries.length ?? 0;
+                const page1Col2Entries = pendingLayout.pages[0]?.columns[1]?.entries.length ?? 0;
+                // eslint-disable-next-line no-console
+                console.log('[RECALCULATE_LAYOUT] Pagination result:', {
+                    pageCount: pendingLayout.pages.length,
+                    page1Col1Entries,
+                    page1Col2Entries,
+                    totalEntries: pendingLayout.pages.reduce((sum, p) =>
+                        sum + p.columns.reduce((colSum, col) => colSum + col.entries.length, 0), 0),
+                });
+            }
+
             // Clear dirty flag immediately to prevent double pagination from effect re-firing
             return { ...state, pendingLayout, isLayoutDirty: false };
         }
@@ -1038,12 +1287,68 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                     const nextPageCount = committedPlan.pages.length;
                     const pendingPages = state.pendingLayout?.pages.length ?? null;
 
-                    // eslint-disable-next-line no-console
-                    console.log('[CanvasLayout] Committed plan', {
-                        previousPageCount,
-                        nextPageCount,
-                        pendingPages,
-                    });
+                    // Debug: Log plan commit details (gated behind plan-commit flag)
+                    if (shouldLogPlanCommit()) {
+                        // Debug: Log all entries in first page, first column to see what's actually there
+                        const page1Col1Entries = committedPlan.pages[0]?.columns[0]?.entries ?? [];
+                        const page1Col2Entries = committedPlan.pages[0]?.columns[1]?.entries ?? [];
+                        const page2Col1Entries = committedPlan.pages[1]?.columns[0]?.entries ?? [];
+                        const page2Col2Entries = committedPlan.pages[1]?.columns[1]?.entries ?? [];
+
+                        // Find component-05 entry in committed plan for debugging
+                        // Check both formats: 'component-05' and 'component-5'
+                        const findComponent05 = (entries: CanvasLayoutEntry[]) =>
+                            entries.find((e) => e.instance.id === 'component-05' || e.instance.id === 'component-5');
+
+                        const component05Entry = findComponent05(page1Col1Entries)
+                            ?? findComponent05(page1Col2Entries)
+                            ?? findComponent05(page2Col1Entries)
+                            ?? findComponent05(page2Col2Entries)
+                            ?? committedPlan.pages.flatMap((p) =>
+                                p.columns.flatMap((col) => col.entries)
+                            ).find((e) => e.instance.id === 'component-05' || e.instance.id === 'component-5');
+
+                        // Expand entry IDs to show full details
+                        const expandEntryDetails = (entries: CanvasLayoutEntry[]) => entries.map(e => ({
+                            id: e.instance.id,
+                            spanTop: e.span?.top,
+                            spanBottom: e.span?.bottom,
+                            region: e.region,
+                        }));
+
+                        // eslint-disable-next-line no-console
+                        console.log('[CanvasLayout] Committed plan', {
+                            previousPageCount,
+                            nextPageCount,
+                            pendingPages,
+                            runId: (committedPlan as any).runId ?? 'unknown',
+                            component05: component05Entry ? {
+                                spanTop: component05Entry.span?.top,
+                                spanBottom: component05Entry.span?.bottom,
+                                region: component05Entry.region,
+                                page: component05Entry.region?.page,
+                                column: component05Entry.region?.column,
+                            } : 'not found',
+                            page1Col1Entries: expandEntryDetails(page1Col1Entries),
+                            page1Col2Entries: expandEntryDetails(page1Col2Entries),
+                            page2Col1Entries: expandEntryDetails(page2Col1Entries),
+                            page2Col2Entries: expandEntryDetails(page2Col2Entries),
+                            allComponent05Entries: committedPlan.pages.flatMap((p) =>
+                                p.columns.flatMap((col) =>
+                                    col.entries.filter((e) => e.instance.id === 'component-05' || e.instance.id === 'component-5').map((e) => ({
+                                        id: e.instance.id,
+                                        page: p.pageNumber,
+                                        column: col.columnNumber,
+                                        spanTop: e.span?.top,
+                                        spanBottom: e.span?.bottom,
+                                    }))
+                                )
+                            ),
+                            totalEntriesAcrossAllPages: committedPlan.pages.reduce((sum, p) =>
+                                sum + p.columns.reduce((colSum, col) => colSum + col.entries.length, 0), 0
+                            ),
+                        });
+                    }
 
                     const hasPendingPlan = Boolean(state.pendingLayout);
                     const didPageCountDecrease = previousPageCount > nextPageCount;
@@ -1228,8 +1533,23 @@ export const useCanvasLayoutActions = () => {
         dispatch({ type: 'COMMIT_LAYOUT' });
     }, [dispatch]);
 
+    const measurementStart = useCallback(() => {
+        dispatch({ type: 'MEASUREMENT_START' });
+    }, [dispatch]);
+
+    const measurementComplete = useCallback(
+        (measurementVersion: number) => {
+            dispatch({ type: 'MEASUREMENT_COMPLETE', payload: { measurementVersion } });
+        },
+        [dispatch]
+    );
+
     const setRegionHeight = useCallback((regionHeightPx: number) => {
         dispatch({ type: 'SET_REGION_HEIGHT', payload: { regionHeightPx } });
+    }, [dispatch]);
+
+    const requestRemeasureByComponent = useCallback((componentIds: string[]) => {
+        dispatch({ type: 'REQUEST_REMEASURE', payload: { componentIds } });
     }, [dispatch]);
 
     return {
@@ -1240,9 +1560,11 @@ export const useCanvasLayoutActions = () => {
         setDataSources,
         setRegistry,
         updateMeasurements,
+        measurementComplete,
         recalculateLayout,
         commitLayout,
         setRegionHeight,
+        requestRemeasureByComponent,
     };
 };
 

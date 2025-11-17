@@ -1,4 +1,4 @@
-import { useMemo, useRef, useEffect } from 'react';
+import { useMemo, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 
 import type {
     ComponentDataSource,
@@ -39,6 +39,7 @@ export const useCanvasLayout = ({
         setRegistry,
         setPageVariables,
         updateMeasurements,
+        measurementComplete,
         recalculateLayout,
         commitLayout,
         setRegionHeight,
@@ -155,10 +156,73 @@ export const useCanvasLayout = ({
         setPageVariables(pageVariables);
     }, [setPageVariables, pageVariables]);
 
-    useEffect(() => {
-        if (!state.isLayoutDirty) return;
-        recalculateLayout();
-    }, [recalculateLayout, state.isLayoutDirty]);
+    // Track the last measurement version we've triggered pagination for
+    // This prevents duplicate pagination runs when measurementStatus changes
+    const lastPaginationVersionRef = useRef<number | null>(null);
+
+    // Use useLayoutEffect to ensure we see state updates synchronously
+    // This is critical for MEASUREMENT_COMPLETE -> RECALCULATE_LAYOUT flow
+    // Use measurementStatus === 'complete' as the trigger instead of isLayoutDirty
+    // to avoid React state batching issues
+    useLayoutEffect(() => {
+        const hasRenderableComponents = state.components.length > 0;
+        const hasMeasurementHistory = state.measurementVersion > 0;
+
+        if (!hasRenderableComponents && !hasMeasurementHistory) {
+            if (process.env.NODE_ENV !== 'production') {
+                // eslint-disable-next-line no-console
+                console.log('⏸️ [useCanvasLayout] Skipping pagination - no components or measurements yet', {
+                    componentCount: state.components.length,
+                    measurementVersion: state.measurementVersion,
+                    measurementStatus: state.measurementStatus,
+                });
+            }
+            return;
+        }
+
+        if (process.env.NODE_ENV !== 'production') {
+            // eslint-disable-next-line no-console
+            console.log('🔍 [useCanvasLayout] useLayoutEffect triggered', {
+                isLayoutDirty: state.isLayoutDirty,
+                measurementStatus: state.measurementStatus,
+                measurementVersion: state.measurementVersion,
+                waitingForInitialMeasurements: state.waitingForInitialMeasurements,
+                hasPendingLayout: !!state.pendingLayout,
+                lastPaginationVersion: lastPaginationVersionRef.current,
+            });
+        }
+
+        // Trigger pagination when measurements are complete and we haven't paginated for this version yet
+        // Primary path: measurementStatus === 'complete' (state machine pattern)
+        // Fallback path: isLayoutDirty === true (in case measurements complete via different path)
+        const shouldTriggerPagination =
+            (state.measurementStatus === 'complete' || state.isLayoutDirty) &&
+            state.measurementVersion !== lastPaginationVersionRef.current &&
+            !state.waitingForInitialMeasurements &&
+            !state.pendingLayout;
+
+        if (shouldTriggerPagination) {
+            if (process.env.NODE_ENV !== 'production') {
+                // eslint-disable-next-line no-console
+                console.log('🔄 [useCanvasLayout] Triggering RECALCULATE_LAYOUT', {
+                    measurementStatus: state.measurementStatus,
+                    isLayoutDirty: state.isLayoutDirty,
+                    measurementVersion: state.measurementVersion,
+                    trigger: state.measurementStatus === 'complete' ? 'measurementStatus' : 'isLayoutDirty',
+                });
+            }
+            lastPaginationVersionRef.current = state.measurementVersion;
+            recalculateLayout();
+        }
+    }, [
+        recalculateLayout,
+        state.components.length,
+        state.measurementStatus,
+        state.isLayoutDirty,
+        state.measurementVersion,
+        state.waitingForInitialMeasurements,
+        state.pendingLayout,
+    ]);
 
     useEffect(() => {
         if (state.pendingLayout) {
@@ -166,16 +230,55 @@ export const useCanvasLayout = ({
         }
     }, [commitLayout, state.pendingLayout]);
 
+    // Wrap measurementComplete to trigger pagination directly after MEASUREMENT_COMPLETE processes
+    // This bypasses the effect timing issue where new measurements might arrive before the effect runs
+    const handleMeasurementComplete = useCallback(
+        (measurementVersion: number) => {
+            if (process.env.NODE_ENV !== 'production') {
+                // eslint-disable-next-line no-console
+                console.log('🎯 [useCanvasLayout] measurementComplete callback', {
+                    measurementVersion,
+                    lastPaginationVersion: lastPaginationVersionRef.current,
+                });
+            }
+            // Dispatch MEASUREMENT_COMPLETE action
+            measurementComplete(measurementVersion);
+            // Trigger pagination directly after a brief delay to ensure reducer has processed
+            // Use setTimeout(0) to let the reducer process first, then trigger pagination
+            setTimeout(() => {
+                // Check if we haven't already paginated for this version
+                if (measurementVersion !== lastPaginationVersionRef.current) {
+                    if (process.env.NODE_ENV !== 'production') {
+                        // eslint-disable-next-line no-console
+                        console.log('🔄 [useCanvasLayout] Direct pagination trigger from measurementComplete', {
+                            measurementVersion,
+                        });
+                    }
+                    lastPaginationVersionRef.current = measurementVersion;
+                    recalculateLayout();
+                }
+            }, 0);
+        },
+        [measurementComplete, recalculateLayout]
+    );
+
     const measurementEntries = state.measurementEntries;
     const baseDimensions = state.baseDimensions ?? computeBasePageDimensions(pageVariables);
+
+    const hasPendingLayout = Boolean(state.pendingLayout);
+    const pendingLayoutPageCount = state.pendingLayout?.pages.length ?? 0;
 
     return {
         plan: state.layoutPlan,
         measurementEntries,
         onMeasurements: updateMeasurements,
+        onMeasurementComplete: handleMeasurementComplete,
         setRegionHeight,
         MeasurementLayer,
         baseDimensions,
+        hasPendingLayout,
+        pendingLayoutPageCount,
+        measurementStatus: state.measurementStatus,
     };
 };
 

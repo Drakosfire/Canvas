@@ -61,6 +61,7 @@ export interface LayoutColumn {
     entries: CanvasLayoutEntry[];
     usedHeightPx?: number;
     availableHeightPx?: number;
+    cursorOffsetPx?: number; // Cached cursor position when column is settled (for next run initialization)
 }
 
 export interface PageLayout {
@@ -78,6 +79,8 @@ export interface LayoutPlan {
     pages: PageLayout[];
     overflowWarnings: OverflowWarning[];
 }
+
+export type MeasurementStatus = 'idle' | 'measuring' | 'complete';
 
 export interface CanvasEntriesResult {
     buckets: RegionBuckets;
@@ -182,6 +185,9 @@ export interface CanvasLayoutState {
     // Region height stability tracking for pagination optimization
     regionHeightLastUpdateTime: number; // Timestamp of last region height update
     regionHeightStabilityThreshold: number; // ms (default: 300ms)
+
+    // Overall measurement lifecycle status for publish-once flow
+    measurementStatus?: MeasurementStatus;
 }
 
 

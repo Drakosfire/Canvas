@@ -40,11 +40,13 @@ export { CanvasPage } from './components/CanvasPage';
 export { useCanvasLayout } from './hooks/useCanvasLayout';
 export { CanvasLayoutProvider } from './layout/state';
 export { MeasurementLayer, MeasurementCoordinator } from './layout/measurement';
+export type { MeasurementLayerProps } from './layout/measurement';
 
 // Layout Utilities
 export { COMPONENT_VERTICAL_SPACING_PX } from './layout/utils';
 export type { BasePageDimensions } from './layout/utils';
 export { isComponentDebugEnabled } from './layout/paginate';
+export { isRegionHeightDebugEnabled } from './layout/regionHeightDebug';
 
 // Layout Types
 export type {

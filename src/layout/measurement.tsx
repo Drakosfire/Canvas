@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 
 import type { MeasurementEntry, MeasurementRecord } from './types';
 import { MEASUREMENT_THROTTLE_MS, regionKey } from './utils';
 import { isDebugEnabled } from './debugFlags';
-import { isComponentDebugEnabled } from './paginate';
+import { isComponentDebugEnabled, normalizeComponentId } from './paginate';
 
 /**
  * Measurement semantics
@@ -42,9 +42,32 @@ const LOOP_DETECTION_WINDOW_MS = 1500;
 const LOOP_ALERT_THRESHOLD = 3;
 const HEIGHT_LOG_EPSILON = 0.75;
 const HEIGHT_LOG_COOLDOWN_MS = 1500;
+// Resize/raf logs are very verbose - only log when measurement flag is enabled AND loop detected
+const SUPPRESS_ANCILLARY_LOGS_BY_DEFAULT = true;
 
 const measurementLoopHistory = new Map<string, MeasurementLoopHistory>();
 const measurementHeightHistory = new Map<string, MeasurementHeightHistory>();
+
+const buildMeasurementEntriesSignature = (entries: MeasurementEntry[]): string => {
+    if (entries.length === 0) {
+        return 'empty';
+    }
+    return entries
+        .map((entry) => {
+            const region = entry.region;
+            return [
+                entry.measurementKey,
+                entry.instance.id,
+                entry.slotIndex,
+                entry.orderIndex,
+                region?.page ?? 'x',
+                region?.column ?? 'x',
+                entry.homeRegionKey ?? 'none',
+                entry.regionContent?.kind ?? 'none',
+            ].join(':');
+        })
+        .join('|');
+};
 
 interface LoopEvaluationResult {
     shouldLog: boolean;
@@ -193,7 +216,9 @@ const logSpellcastingEvent = (
             shouldLog = result.shouldLog;
             reason = result.reason;
         } else if (type === 'resize' || type === 'raf') {
-            shouldLog = shouldLogAncillaryEvent(key);
+            // Resize/raf logs are very verbose - only log when explicitly enabled AND loop detected
+            // This prevents excessive logging when measurement flag is off
+            shouldLog = shouldLogAncillaryEvent(key) && !SUPPRESS_ANCILLARY_LOGS_BY_DEFAULT;
         }
     }
 
@@ -280,8 +305,10 @@ export const useIdleMeasurementDispatcher = (
 
         entries.forEach((entry) => {
             if (entry.deleted) {
-                deletions.push({ key: entry.key, height: 0, measuredAt: entry.measuredAt });
-            } else if (entry.height > MEASUREMENT_EPSILON) {
+                // Use negative height to signal explicit deletion
+                deletions.push({ key: entry.key, height: -1, measuredAt: entry.measuredAt });
+            } else {
+                // Include zero-height measurements (e.g., metadata blocks) as present
                 measurements.push(entry);
             }
         });
@@ -325,7 +352,7 @@ export const useIdleMeasurementDispatcher = (
             });
 
             // null height signals deletion
-            if (height === null || height <= 0) {
+            if (height === null) {
                 pending.current.set(key, { key, height: 0, measuredAt, deleted: true });
             } else {
                 const previous = pending.current.get(key);
@@ -373,7 +400,7 @@ export class MeasurementCoordinator {
 
         if (shouldLogMeasurements()) {
             console.log('🔒 [Measurement][Spellcasting] lock', {
-                componentId,
+                componentId: normalizeComponentId(componentId),
             });
         }
     }
@@ -388,7 +415,7 @@ export class MeasurementCoordinator {
 
         if (shouldLogMeasurements()) {
             console.log('🔓 [Measurement][Spellcasting] unlock', {
-                componentId,
+                componentId: normalizeComponentId(componentId),
             });
         }
     }
@@ -423,7 +450,7 @@ class MeasurementObserver {
 
         const componentId = extractComponentId(this.key);
         const isDebugComponent = componentId ? isComponentDebugEnabled(componentId) : false;
-        if (process.env.NODE_ENV !== 'production' && isDebugComponent) {
+        if (shouldLogMeasurements() && isDebugComponent) {
             console.log('🔒 [Measurement][Spellcasting] lock', {
                 key: this.key,
             });
@@ -439,7 +466,7 @@ class MeasurementObserver {
 
         const componentId = extractComponentId(this.key);
         const isDebugComponent = componentId ? isComponentDebugEnabled(componentId) : false;
-        if (process.env.NODE_ENV !== 'production' && isDebugComponent) {
+        if (shouldLogMeasurements() && isDebugComponent) {
             console.log('🔓 [Measurement][Spellcasting] unlock', {
                 key: this.key,
                 hasPendingMeasurement: this.pendingMeasurement != null,
@@ -488,18 +515,18 @@ class MeasurementObserver {
         const hasImages = this.node.querySelectorAll('img').length > 0;
         const componentId = extractComponentId(this.key);
         const isDebugComponent = componentId ? isComponentDebugEnabled(componentId) : false;
-        
+
         // Debug logging for image measurements (always log for debug components, even if warning doesn't fire)
-        if (isDebugComponent && hasImages) {
+        if (shouldLogMeasurements() && isDebugComponent && hasImages) {
             const parent = this.node.parentElement;
             const parentRect = parent?.getBoundingClientRect();
             const parentComputed = parent ? window.getComputedStyle(parent) : null;
             const image = this.node.querySelector('img') as HTMLImageElement | null;
-            
+
             // Log width diagnostics for image components
             console.log('[MeasurementObserver] 🔍 Image measurement diagnostics:', {
                 key: this.key,
-                componentId,
+                componentId: componentId ? normalizeComponentId(componentId) : componentId,
                 height,
                 nodeWidth: rect.width,
                 nodeComputedWidth: computed?.width,
@@ -518,17 +545,17 @@ class MeasurementObserver {
                 } : null,
             });
         }
-        
+
         if (hasImages && height > 500) {
             const parent = this.node.parentElement;
             const parentRect = parent?.getBoundingClientRect();
             const parentComputed = parent ? window.getComputedStyle(parent) : null;
 
-            // Only warn for debug-enabled components
-            if (isDebugComponent) {
+            // Only warn for debug-enabled components when measurement logging is enabled
+            if (shouldLogMeasurements() && isDebugComponent) {
                 console.warn('[MeasurementObserver] ⚠️ LARGE IMAGE MEASUREMENT:', {
                     key: this.key,
-                    componentId,
+                    componentId: componentId ? normalizeComponentId(componentId) : componentId,
                     height,
                     nodeWidth: rect.width,
                     nodeComputedWidth: computed?.width,
@@ -675,13 +702,138 @@ export interface MeasurementLayerProps {
     entries: MeasurementEntry[];
     renderComponent: (entry: MeasurementEntry) => React.ReactNode;
     onMeasurements: MeasurementDispatcher;
+    onMeasurementComplete?: (measurementVersion: number) => void; // Callback when all measurements are published
     coordinator?: MeasurementCoordinator; // Phase 1: Optional coordinator for locking
     measuredColumnWidth?: number | null; // Explicit column width for accurate image scaling
+    publishOnce?: boolean; // Spike: accumulate and publish single batch when complete
 }
 
-export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, renderComponent, onMeasurements, coordinator, measuredColumnWidth }) => {
+const readPublishOnceEnv = (): boolean => {
+    try {
+        const v = (process.env.REACT_APP_CANVAS_PUBLISH_ONCE || '').toLowerCase();
+        return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+    } catch {
+        return false; // Default to false for backward compatibility
+    }
+};
+
+export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, renderComponent, onMeasurements, onMeasurementComplete, coordinator, measuredColumnWidth, publishOnce }) => {
+    const effectivePublishOnce = typeof publishOnce === 'boolean' ? publishOnce : readPublishOnceEnv();
+    const cumulativeRef = useRef(new Map<string, MeasurementRecord>());
+    const publishedRef = useRef(false);
+    const measurementVersionRef = useRef(0); // Track measurement version for proper incrementing
+    const previousEntriesSignatureRef = useRef<string | null>(null);
+    const previousPublishModeRef = useRef<boolean>(effectivePublishOnce);
+
+    const requiredKeysRef = useRef(new Set<string>());
+    const measurementEntriesSignature = useMemo(() => buildMeasurementEntriesSignature(entries), [entries]);
+
+    useEffect(() => {
+        // Defer resets when there are no entries to measure yet (e.g., pre-refresh initialization)
+        if (entries.length === 0) {
+            requiredKeysRef.current = new Set();
+            cumulativeRef.current.clear();
+            publishedRef.current = false;
+            previousEntriesSignatureRef.current = measurementEntriesSignature;
+            previousPublishModeRef.current = effectivePublishOnce;
+            if (shouldLogMeasurements()) {
+                console.log('⏸️ [Measurement] no entries to measure, waiting for components', {
+                    publishOnce: effectivePublishOnce,
+                });
+            }
+            return;
+        }
+
+        const signatureChanged = previousEntriesSignatureRef.current !== measurementEntriesSignature;
+        const publishModeChanged = previousPublishModeRef.current !== effectivePublishOnce;
+
+        if (!signatureChanged && !publishModeChanged) {
+            if (shouldLogMeasurements()) {
+                console.log('📭 [Measurement] entries unchanged, skipping reset', {
+                    signature: measurementEntriesSignature || 'empty',
+                });
+            }
+            return;
+        }
+
+        previousEntriesSignatureRef.current = measurementEntriesSignature;
+        previousPublishModeRef.current = effectivePublishOnce;
+
+        const required = new Set<string>();
+        entries.forEach((e) => required.add(e.measurementKey));
+        requiredKeysRef.current = required;
+        // Reset for new cycle
+        cumulativeRef.current.clear();
+        publishedRef.current = false;
+        // Note: measurementStatus will be set to 'measuring' by MEASUREMENTS_UPDATED action
+        // when first measurements arrive, so we don't need to dispatch MEASUREMENT_START here
+        if (shouldLogMeasurements()) {
+            console.log('📐 [Measurement] start', {
+                requiredCount: required.size,
+                publishOnce: effectivePublishOnce,
+            });
+        }
+    }, [entries, measurementEntriesSignature, effectivePublishOnce]);
+
     const dispatcher = useIdleMeasurementDispatcher((updates) => {
-        onMeasurements(updates);
+        // Hard-stop: if we've already published, ignore all further updates
+        if (effectivePublishOnce && publishedRef.current) {
+            return;
+        }
+        if (!effectivePublishOnce) {
+            onMeasurements(updates);
+            return;
+        }
+        if (publishedRef.current) {
+            return;
+        }
+        updates.forEach((u) => {
+            // Treat zero-height metadata as present; only remove on explicit delete (negative height)
+            if (u.height >= 0) {
+                cumulativeRef.current.set(u.key, u);
+            } else {
+                cumulativeRef.current.delete(u.key);
+            }
+        });
+        const required = requiredKeysRef.current;
+        let allPresent = true;
+        required.forEach((key) => {
+            if (!cumulativeRef.current.has(key)) {
+                allPresent = false;
+            }
+        });
+        if (allPresent && required.size > 0) {
+            publishedRef.current = true;
+            // Increment version for this measurement cycle
+            const version = measurementVersionRef.current + 1;
+            measurementVersionRef.current = version;
+            
+            if (shouldLogMeasurements()) {
+                console.log('✅ [Measurement] publish-complete', {
+                    publishedCount: cumulativeRef.current.size,
+                    requiredCount: required.size,
+                    measurementVersion: version,
+                });
+            }
+            // Publish one consolidated batch to reducer
+            onMeasurements(Array.from(cumulativeRef.current.values()));
+            // Immediately detach all observers to prevent post-publish churn
+            try {
+                observers.current.forEach((observer, key) => {
+                    logSpellcastingEvent(key, 'detach', '🧹', 'detach-after-publish', {}, { force: true });
+                    observer.detach();
+                    coordinator?.unregisterObserver(key);
+                });
+                observers.current.clear();
+            } catch {
+                // best-effort cleanup
+            }
+            // Dispatch MEASUREMENT_COMPLETE to trigger layout recalculation
+            // Reducer will guard against duplicate dispatches of the same version
+            if (onMeasurementComplete) {
+                onMeasurementComplete(version);
+            }
+        }
     });
 
     const observers = useRef(new Map<string, MeasurementObserver>());
@@ -697,7 +849,12 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, ren
                     existingObserver.detach();
                     observers.current.delete(key);
                     coordinator?.unregisterObserver(key);
-                    dispatcher(key, null);
+                    // In publish-once mode (pre-initial publish), suppress deletion dispatches.
+                    // Detach/attach churn during React StrictMode and initial measurement can
+                    // cause required keys to be removed, preventing the first publish.
+                    if (!effectivePublishOnce || publishedRef.current) {
+                        dispatcher(key, null);
+                    }
                 }
                 return;
             }
@@ -712,7 +869,7 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, ren
 
             if (isDebugComponent || isEntryDebugComponent) {
                 logSpellcastingEvent(key, 'attach', '➕', 'attach', {
-                    entryId: entry.instance.id,
+                    entryId: normalizeComponentId(entry.instance.id),
                     slotIndex: entry.slotIndex,
                     orderIndex: entry.orderIndex,
                     regionContentKind: entry.regionContent?.kind,
@@ -725,7 +882,7 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, ren
 
             coordinator?.registerObserver(key, observer);
         },
-        [dispatcher, coordinator]
+        [dispatcher, coordinator, effectivePublishOnce]
     );
 
     useEffect(() => () => {
@@ -738,7 +895,20 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, ren
     }, [coordinator]);
 
     return (
-        <>
+        <div
+            className="dm-measurement-layer"
+            style={{
+                position: 'fixed',
+                left: '-100000px',
+                top: 0,
+                visibility: 'hidden',
+                pointerEvents: 'none',
+                display: 'flex',
+                flexDirection: 'column',
+                width: measuredColumnWidth != null ? `${measuredColumnWidth}px` : 'auto',
+                maxWidth: measuredColumnWidth != null ? `${measuredColumnWidth}px` : 'none',
+            }}
+        >
             {entries.map((entry) => (
                 <div
                     key={entry.measurementKey}
@@ -746,29 +916,21 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, ren
                     className="dm-measurement-entry"
                     data-measurement-key={entry.measurementKey}
                     style={{
-                        // CRITICAL: Render in flex context to match visible layout
-                        // Parent container is already positioned offscreen, so no need for absolute positioning
-                        // CRITICAL: Use explicit width when available to ensure accurate image scaling
-                        // Fallback to 100% to inherit from parent if measuredColumnWidth not available yet
-                        // This ensures images (width: 100%) scale to column width, not natural image width
-                        width: measuredColumnWidth ? `${measuredColumnWidth}px` : '100%',
-                        maxWidth: measuredColumnWidth ? `${measuredColumnWidth}px` : '100%', // Prevent expansion beyond parent width
-                        boxSizing: 'border-box', // Include padding/border in width calculation
-                        // Natural height - let content determine height
-                        // Infinite expansion is detected via computed style checks (flexGrow, height: 100%)
+                        width: measuredColumnWidth != null ? `${measuredColumnWidth}px` : '100%',
+                        maxWidth: measuredColumnWidth != null ? `${measuredColumnWidth}px` : '100%',
+                        boxSizing: 'border-box',
                         height: 'auto',
                         minHeight: 0,
-                        // Prevent flex/grid expansion
                         flexShrink: 0,
                         flexGrow: 0,
-                        overflow: 'hidden', // Prevent visual bleed during measurement
+                        overflow: 'hidden',
                         transform: 'none',
                     }}
                 >
                     {renderComponent(entry)}
                 </div>
             ))}
-        </>
+        </div>
     );
 };
 
