@@ -176,6 +176,15 @@ export const buildBuckets = ({
     const slotOrder = buildSlotOrder(template);
     const buckets: RegionBuckets = new Map();
 
+    if (process.env.NODE_ENV !== 'production') {
+        console.log('[buildBuckets] Building buckets:', {
+            instanceCount: instances.length,
+            dataSourceCount: dataSources.length,
+            hasTemplate: !!template,
+            columnCount,
+        });
+    }
+
     instances.forEach((instance, index) => {
         const persisted = assignedRegions?.get(instance.id);
         const resolvedHomeRaw = resolveLocation(instance, template, columnCount, pageWidthPx);
@@ -203,27 +212,8 @@ export const buildBuckets = ({
             );
 
             if (itemsSource.length === 0) {
-                const key = regionKey(baseLocation.page, baseLocation.column);
-                const measurementKey = computeMeasurementKey(instance.id);
-                const record = measurements.get(measurementKey);
-                const entry: CanvasLayoutEntry = {
-                    instance,
-                    slotIndex,
-                    orderIndex: index,
-                    sourceRegionKey: key,
-                    region: baseLocation,
-                    homeRegion: resolvedHome,
-                    homeRegionKey: homeKey,
-                    measurementKey,
-                    estimatedHeight: record?.height ?? DEFAULT_COMPONENT_HEIGHT_PX,
-                    needsMeasurement: !record,
-                    span: record ? { top: 0, bottom: record.height, height: record.height } : undefined,
-                    slotDimensions,
-                };
-                if (!buckets.has(key)) {
-                    buckets.set(key, []);
-                }
-                buckets.get(key)!.push(entry);
+                // No data for this list component – skip adding a placeholder entry so the
+                // pagination plan stays in sync with what React actually renders.
                 return;
             }
 
@@ -381,6 +371,19 @@ export const buildBuckets = ({
             return a.orderIndex - b.orderIndex;
         });
     });
+
+    if (process.env.NODE_ENV !== 'production') {
+        const bucketKeys = Array.from(buckets.keys());
+        const bucketSizes = bucketKeys.map(key => ({
+            key,
+            entryCount: buckets.get(key)?.length ?? 0,
+        }));
+        console.log('[buildBuckets] Built buckets:', {
+            bucketCount: buckets.size,
+            bucketSizes,
+            totalEntries: bucketSizes.reduce((sum, b) => sum + b.entryCount, 0),
+        });
+    }
 
     return buckets;
 };

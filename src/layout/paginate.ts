@@ -3137,6 +3137,22 @@ export const paginate = ({
                     });
                 }
 
+                // Filter out entries with 0 items - components return null for empty items, creating zero-height entries
+                // Even metadata-only entries need at least 1 item to render (metadata is shown alongside items)
+                if (placedItems.length === 0) {
+                    debugLog(entry.instance.id, '⏭️', 'skipping empty entry', {
+                        runId,
+                        regionKey: key,
+                        reason: 'Component returns null for empty items - would create zero-height entry',
+                        metadataOnly: metadataOnlyPlacement,
+                    });
+                    // Don't create entry, but still advance cursor if metadata was placed
+                    if (metadataOnlyPlacement && placedHeight > 0) {
+                        cursor.currentOffset += placedHeight + COMPONENT_VERTICAL_SPACING_PX;
+                    }
+                    continue;
+                }
+
                 // Fix 1: Check for duplicate before adding (Path 6: Placed entry from split)
                 const existingIndexPath6 = findExistingEntry(entry, columnEntries, page.pageNumber, column.columnNumber);
                 if (existingIndexPath6 >= 0) {
