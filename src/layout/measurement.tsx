@@ -698,6 +698,8 @@ export const createMeasurementEntry = (overrides: Partial<MeasurementEntry> = {}
     ...overrides,
 });
 
+type MeasurementStagingMode = 'fixed-offscreen' | 'embedded';
+
 export interface MeasurementLayerProps {
     entries: MeasurementEntry[];
     renderComponent: (entry: MeasurementEntry) => React.ReactNode;
@@ -706,6 +708,7 @@ export interface MeasurementLayerProps {
     coordinator?: MeasurementCoordinator; // Phase 1: Optional coordinator for locking
     measuredColumnWidth?: number | null; // Explicit column width for accurate image scaling
     publishOnce?: boolean; // Spike: accumulate and publish single batch when complete
+    stagingMode?: MeasurementStagingMode; // Render measurement DOM offscreen (default) or embedded
 }
 
 const readPublishOnceEnv = (): boolean => {
@@ -717,7 +720,16 @@ const readPublishOnceEnv = (): boolean => {
     }
 };
 
-export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, renderComponent, onMeasurements, onMeasurementComplete, coordinator, measuredColumnWidth, publishOnce }) => {
+export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({
+    entries,
+    renderComponent,
+    onMeasurements,
+    onMeasurementComplete,
+    coordinator,
+    measuredColumnWidth,
+    publishOnce,
+    stagingMode = 'fixed-offscreen',
+}) => {
     const effectivePublishOnce = typeof publishOnce === 'boolean' ? publishOnce : readPublishOnceEnv();
     const cumulativeRef = useRef(new Map<string, MeasurementRecord>());
     const publishedRef = useRef(false);
@@ -775,18 +787,60 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, ren
         }
     }, [entries, measurementEntriesSignature, effectivePublishOnce]);
 
+    const checkAndSignalCompletion = useCallback(
+        (mode: 'incremental' | 'publish-once'): number | null => {
+            if (publishedRef.current) {
+                return null;
+            }
+
+            const required = requiredKeysRef.current;
+            if (required.size === 0) {
+                return null;
+            }
+
+            let allPresent = true;
+            required.forEach((key) => {
+                if (!cumulativeRef.current.has(key)) {
+                    allPresent = false;
+                }
+            });
+
+            if (!allPresent) {
+                return null;
+            }
+
+            publishedRef.current = true;
+            const version = measurementVersionRef.current + 1;
+            measurementVersionRef.current = version;
+
+            if (shouldLogMeasurements()) {
+                const logPayload = {
+                    publishedCount: cumulativeRef.current.size,
+                    requiredCount: required.size,
+                    measurementVersion: version,
+                };
+                if (mode === 'publish-once') {
+                    console.log('✅ [Measurement] publish-complete', logPayload);
+                } else {
+                    console.log('✅ [Measurement] measurement-complete (incremental)', logPayload);
+                }
+            }
+
+            if (onMeasurementComplete) {
+                onMeasurementComplete(version);
+            }
+
+            return version;
+        },
+        [onMeasurementComplete]
+    );
+
     const dispatcher = useIdleMeasurementDispatcher((updates) => {
-        // Hard-stop: if we've already published, ignore all further updates
+        // Hard-stop: if we've already published (publish-once mode), ignore all further updates
         if (effectivePublishOnce && publishedRef.current) {
             return;
         }
-        if (!effectivePublishOnce) {
-            onMeasurements(updates);
-            return;
-        }
-        if (publishedRef.current) {
-            return;
-        }
+
         updates.forEach((u) => {
             // Treat zero-height metadata as present; only remove on explicit delete (negative height)
             if (u.height >= 0) {
@@ -795,44 +849,30 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, ren
                 cumulativeRef.current.delete(u.key);
             }
         });
-        const required = requiredKeysRef.current;
-        let allPresent = true;
-        required.forEach((key) => {
-            if (!cumulativeRef.current.has(key)) {
-                allPresent = false;
-            }
-        });
-        if (allPresent && required.size > 0) {
-            publishedRef.current = true;
-            // Increment version for this measurement cycle
-            const version = measurementVersionRef.current + 1;
-            measurementVersionRef.current = version;
-            
-            if (shouldLogMeasurements()) {
-                console.log('✅ [Measurement] publish-complete', {
-                    publishedCount: cumulativeRef.current.size,
-                    requiredCount: required.size,
-                    measurementVersion: version,
-                });
-            }
-            // Publish one consolidated batch to reducer
-            onMeasurements(Array.from(cumulativeRef.current.values()));
-            // Immediately detach all observers to prevent post-publish churn
-            try {
-                observers.current.forEach((observer, key) => {
-                    logSpellcastingEvent(key, 'detach', '🧹', 'detach-after-publish', {}, { force: true });
-                    observer.detach();
-                    coordinator?.unregisterObserver(key);
-                });
-                observers.current.clear();
-            } catch {
-                // best-effort cleanup
-            }
-            // Dispatch MEASUREMENT_COMPLETE to trigger layout recalculation
-            // Reducer will guard against duplicate dispatches of the same version
-            if (onMeasurementComplete) {
-                onMeasurementComplete(version);
-            }
+
+        if (!effectivePublishOnce) {
+            onMeasurements(updates);
+            checkAndSignalCompletion('incremental');
+            return;
+        }
+
+        const completionVersion = checkAndSignalCompletion('publish-once');
+        if (completionVersion == null) {
+            return;
+        }
+
+        // Publish one consolidated batch to reducer
+        onMeasurements(Array.from(cumulativeRef.current.values()));
+        // Immediately detach all observers to prevent post-publish churn
+        try {
+            observers.current.forEach((observer, key) => {
+                logSpellcastingEvent(key, 'detach', '🧹', 'detach-after-publish', {}, { force: true });
+                observer.detach();
+                coordinator?.unregisterObserver(key);
+            });
+            observers.current.clear();
+        } catch {
+            // best-effort cleanup
         }
     });
 
@@ -852,7 +892,7 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, ren
                     // In publish-once mode (pre-initial publish), suppress deletion dispatches.
                     // Detach/attach churn during React StrictMode and initial measurement can
                     // cause required keys to be removed, preventing the first publish.
-                    if (!effectivePublishOnce || publishedRef.current) {
+                    if (!effectivePublishOnce || !publishedRef.current) {
                         dispatcher(key, null);
                     }
                 }
@@ -894,10 +934,18 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, ren
         observers.current.clear();
     }, [coordinator]);
 
-    return (
-        <div
-            className="dm-measurement-layer"
-            style={{
+    const containerStyle: React.CSSProperties =
+        stagingMode === 'embedded'
+            ? {
+                position: 'relative',
+                width: measuredColumnWidth != null ? `${measuredColumnWidth}px` : '100%',
+                maxWidth: measuredColumnWidth != null ? `${measuredColumnWidth}px` : '100%',
+                visibility: 'hidden',
+                pointerEvents: 'none',
+                display: 'flex',
+                flexDirection: 'column',
+            }
+            : {
                 position: 'fixed',
                 left: '-100000px',
                 top: 0,
@@ -907,8 +955,10 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({ entries, ren
                 flexDirection: 'column',
                 width: measuredColumnWidth != null ? `${measuredColumnWidth}px` : 'auto',
                 maxWidth: measuredColumnWidth != null ? `${measuredColumnWidth}px` : 'none',
-            }}
-        >
+            };
+
+    return (
+        <div className="dm-measurement-layer" style={containerStyle}>
             {entries.map((entry) => (
                 <div
                     key={entry.measurementKey}

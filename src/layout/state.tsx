@@ -48,6 +48,7 @@ if (typeof window !== 'undefined') {
 
 const shouldLogLayoutDirty = (): boolean => isDebugEnabled('layout-dirty');
 const shouldLogMeasureFirst = (): boolean => isDebugEnabled('measure-first');
+const shouldLogMeasurementDebug = (): boolean => isDebugEnabled('measurement');
 
 const logLayoutDirty = (reason: string, context: Record<string, unknown> = {}) => {
     if (!shouldLogLayoutDirty()) {
@@ -246,38 +247,42 @@ const logColumnCacheDisabledOnce = () => {
     console.log('[ColumnCache] Disabled via REACT_APP_CANVAS_COLUMN_CACHE flag (telemetry mode)');
 };
 
-export const createInitialState = (): CanvasLayoutState => ({
-    components: [],
-    template: null,
-    dataSources: [],
-    componentRegistry: {},
-    pageVariables: null,
-    columnCount: 1,
-    regionHeightPx: 0,
-    pageWidthPx: 0,
-    pageHeightPx: 0,
-    baseDimensions: null,
-    measurements: new Map(),
-    measurementVersion: 0,
-    layoutPlan: initialPlan,
-    pendingLayout: null,
-    measurementEntries: [],
-    buckets: new Map(),
-    isLayoutDirty: false,
-    allComponentsMeasured: false,
-    waitingForInitialMeasurements: false,
-    requiredMeasurementKeys: new Set(),
-    missingMeasurementKeys: new Set(),
-    assignedRegions: new Map(),
-    homeRegions: new Map(),
-    adapters: createDefaultAdapters(),
-    segmentRerouteCache: new SegmentRerouteCache(),
-    columnMeasurementCache: new Map(),
-    measurementStabilityThreshold: MEASUREMENT_STABILITY_THRESHOLD_MS,
-    regionHeightLastUpdateTime: 0,
-    regionHeightStabilityThreshold: REGION_HEIGHT_STABILITY_THRESHOLD_MS,
-    measurementStatus: 'idle' as import('./types').MeasurementStatus,
-});
+export const createInitialState = (): CanvasLayoutState => {
+    processedMeasurementVersions.clear();
+    return {
+        components: [],
+        template: null,
+        dataSources: [],
+        componentRegistry: {},
+        pageVariables: null,
+        columnCount: 1,
+        regionHeightPx: 0,
+        pageWidthPx: 0,
+        pageHeightPx: 0,
+        baseDimensions: null,
+        measurements: new Map(),
+        measurementVersion: 0,
+        lastMeasurementCompleteVersion: 0,
+        layoutPlan: initialPlan,
+        pendingLayout: null,
+        measurementEntries: [],
+        buckets: new Map(),
+        isLayoutDirty: false,
+        allComponentsMeasured: false,
+        waitingForInitialMeasurements: false,
+        requiredMeasurementKeys: new Set(),
+        missingMeasurementKeys: new Set(),
+        assignedRegions: new Map(),
+        homeRegions: new Map(),
+        adapters: createDefaultAdapters(),
+        segmentRerouteCache: new SegmentRerouteCache(),
+        columnMeasurementCache: new Map(),
+        measurementStabilityThreshold: MEASUREMENT_STABILITY_THRESHOLD_MS,
+        regionHeightLastUpdateTime: 0,
+        regionHeightStabilityThreshold: REGION_HEIGHT_STABILITY_THRESHOLD_MS,
+        measurementStatus: 'idle' as import('./types').MeasurementStatus,
+    };
+};
 
 const upsertRegionAssignment = (assignedRegions: Map<string, SlotAssignment>, entry: SlotAssignment, instanceId: string) => {
     assignedRegions.set(instanceId, entry);
@@ -292,10 +297,16 @@ const checkAllComponentsMeasured = (
     components: ComponentInstance[],
     measurements: Map<MeasurementKey, MeasurementRecord>
 ): boolean => {
+    const measuredComponents = new Set<string>();
+    measurements.forEach((_, key) => {
+        const match = key.match(/^(component-\d+)/);
+        if (match) {
+            measuredComponents.add(match[1]);
+        }
+    });
+
     for (const component of components) {
-        const blockKey = `${component.id}:block`;
-        if (!measurements.has(blockKey)) {
-            // We need at least the block measurement for every component
+        if (!measuredComponents.has(component.id)) {
             return false;
         }
     }
@@ -476,6 +487,81 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 allComponentsMeasured: false,
                 requiredMeasurementKeys: new Set(),
                 missingMeasurementKeys: new Set(),
+            };
+        }
+
+        const hasRenderableComponents = base.components.length > 0;
+        const hasRenderableDataSources = base.dataSources.length > 0;
+
+        if (shouldLogMeasurementDebug()) {
+            console.log('[measurement-debug] recomputeEntries', {
+                componentCount: base.components.length,
+                dataSourceCount: base.dataSources.length,
+                measurementEntryCount: base.measurementEntries.length,
+                measurementStoreSize: base.measurements.size,
+                waitingForInitialMeasurements: base.waitingForInitialMeasurements,
+                measurementStatus: base.measurementStatus ?? 'unknown',
+                hasRenderableComponents,
+                hasRenderableDataSources,
+            });
+        }
+
+        // REFRESH FIX: Detect and flush stale measurement state on refresh
+        // CRITICAL: Only flush when measurements exist WITHOUT components (true stale state)
+        // Do NOT flush when cache exists but plan is empty - that's normal during measure-first flow
+        const hasStaleMeasurements = base.measurements.size > 0 && !hasRenderableComponents;
+
+        if (hasStaleMeasurements) {
+            if (process.env.NODE_ENV !== 'production') {
+                // eslint-disable-next-line no-console
+                console.log('🔄 [CanvasLayout] Flushing stale measurement state detected on refresh', {
+                    measurementCount: base.measurements.size,
+                    componentCount: base.components.length,
+                    dataSourceCount: base.dataSources.length,
+                });
+            }
+
+            return {
+                ...base,
+                measurements: new Map<MeasurementKey, MeasurementRecord>(),
+                measurementVersion: 0,
+                lastMeasurementCompleteVersion: 0,
+                columnMeasurementCache: new Map<string, ColumnMeasurementState>(),
+                measurementStatus: 'idle' as import('./types').MeasurementStatus,
+                waitingForInitialMeasurements: false,
+                allComponentsMeasured: false,
+                requiredMeasurementKeys: new Set(),
+                missingMeasurementKeys: new Set(),
+                buckets: new Map(),
+                measurementEntries: [],
+            };
+        }
+
+        if (!hasRenderableComponents || !hasRenderableDataSources) {
+            if (process.env.NODE_ENV !== 'production') {
+                // eslint-disable-next-line no-console
+                console.log('⏸️ [CanvasLayout] Holding recompute until renderable data is ready', {
+                    componentCount: base.components.length,
+                    dataSourceCount: base.dataSources.length,
+                });
+            }
+
+            return {
+                ...base,
+                buckets: new Map(),
+                measurementEntries: [],
+                waitingForInitialMeasurements: false,
+                allComponentsMeasured: false,
+                requiredMeasurementKeys: new Set(),
+                missingMeasurementKeys: new Set(),
+                measurements: new Map<MeasurementKey, MeasurementRecord>(),
+                measurementVersion: 0,
+                lastMeasurementCompleteVersion: 0,
+                columnMeasurementCache: new Map<string, ColumnMeasurementState>(),
+                measurementStatus: 'idle' as import('./types').MeasurementStatus,
+                layoutPlan: initialPlan,
+                pendingLayout: null,
+                isLayoutDirty: false,
             };
         }
 
@@ -904,18 +990,15 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 ...state,
                 measurements,
                 measurementVersion: nextVersion,
-                allComponentsMeasured: allMeasured,
-                // Only update waitingForInitialMeasurements if MEASUREMENT_COMPLETE hasn't fired yet
-                // Once complete, preserve the false value to allow pagination
+                allComponentsMeasured: measurementCompleteAlreadyFired ? state.allComponentsMeasured : allMeasured,
+                // Once MEASUREMENT_COMPLETE fires, keep waiting=false
                 waitingForInitialMeasurements: measurementCompleteAlreadyFired
-                    ? state.waitingForInitialMeasurements
+                    ? false
                     : (wasWaitingForMeasurements && !allMeasured),
-                missingMeasurementKeys: missingKeys,
+                missingMeasurementKeys: measurementCompleteAlreadyFired ? state.missingMeasurementKeys : missingKeys,
                 columnMeasurementCache: updatedCache,
-                // Only mark complete when EVERYTHING is measured
-                // But preserve 'complete' status if MEASUREMENT_COMPLETE already fired
                 measurementStatus: measurementCompleteAlreadyFired
-                    ? state.measurementStatus
+                    ? 'complete' as import('./types').MeasurementStatus
                     : ((missingKeys.size === 0 && allMeasured)
                         ? ('complete' as import('./types').MeasurementStatus)
                         : ('measuring' as import('./types').MeasurementStatus)),
@@ -930,6 +1013,15 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                     ...updatedState,
                     assignedRegions: state.assignedRegions,
                 });
+
+                // CRITICAL: Preserve existing measurementEntries to prevent remounting MeasurementLayer
+                // recomputeEntries rebuilds measurementEntries, but they don't change after initial measurement
+                // Remounting causes infinite measurement loop: measure -> detach -> remount -> measure...
+                // Check if this rebuild is happening because measurements just completed
+                const isCompletingMeasurements = (missingKeys.size === 0 && allMeasured) && state.measurementStatus !== 'complete';
+                const preservedMeasurementEntries = isCompletingMeasurements
+                    ? state.measurementEntries  // Preserve during completion
+                    : recomputed.measurementEntries;  // Use new entries for other rebuilds
 
                 // Disable column cache triggers during measuring; only allow when complete
                 const readyColumnsAfterRebuild = (updatedState.measurementStatus === 'complete' && columnCacheEnabled)
@@ -1016,6 +1108,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 }
                 return {
                     ...recomputed,
+                    measurementEntries: preservedMeasurementEntries,
                     regionHeightPx: nextRegionHeightPx,
                     // CRITICAL: If MEASUREMENT_COMPLETE already fired, preserve isLayoutDirty to allow pagination
                     // Otherwise, use canTriggerPagination
@@ -1076,36 +1169,43 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
         }
         case 'MEASUREMENT_COMPLETE': {
             const version = action.payload.measurementVersion;
-            const alreadyProcessed = processedMeasurementVersions.has(version);
+            const alreadyCommitted = state.lastMeasurementCompleteVersion >= version;
 
-            if (alreadyProcessed) {
+            if (alreadyCommitted) {
                 if (process.env.NODE_ENV !== 'production') {
                     // eslint-disable-next-line no-console
-                    console.log('⏭️ [Layout] MEASUREMENT_COMPLETE skipped - duplicate version', {
+                    console.log('⏭️ [Layout] MEASUREMENT_COMPLETE skipped - version already committed', {
                         measurementVersion: version,
+                        lastCommittedVersion: state.lastMeasurementCompleteVersion,
                         currentStatus: state.measurementStatus,
-                        currentVersion: state.measurementVersion,
-                        isLayoutDirty: state.isLayoutDirty,
                     });
                 }
+                return state;
+            }
 
-                // If state already reflects this completion, exit immediately (prevents duplicate pagination)
-                if (state.measurementStatus === 'complete' && state.measurementVersion === version) {
-                    return state;
-                }
-
-                // Recovery path: state hasn't been marked complete yet, so fall through to finish the transition
-                // We do NOT re-add to processedMeasurementVersions to avoid unbounded growth
-            } else {
+            const wasSeen = processedMeasurementVersions.has(version);
+            if (!wasSeen) {
                 processedMeasurementVersions.add(version);
-                // Clean up old versions (keep last 10 to prevent memory leak)
                 if (processedMeasurementVersions.size > 10) {
                     const sorted = Array.from(processedMeasurementVersions).sort((a, b) => a - b);
                     const toRemove = sorted.slice(0, sorted.length - 10);
                     toRemove.forEach(v => processedMeasurementVersions.delete(v));
                 }
             }
-            if (process.env.NODE_ENV !== 'production') {
+
+            if (wasSeen && state.measurementStatus === 'complete') {
+                if (process.env.NODE_ENV !== 'production') {
+                    // eslint-disable-next-line no-console
+                    console.log('⏭️ [Layout] MEASUREMENT_COMPLETE skipped - duplicate (post-complete)', {
+                        measurementVersion: version,
+                        currentStatus: state.measurementStatus,
+                        currentVersion: state.measurementVersion,
+                        isLayoutDirty: state.isLayoutDirty,
+                    });
+                }
+                return state;
+            }
+            if (!wasSeen && process.env.NODE_ENV !== 'production') {
                 // eslint-disable-next-line no-console
                 console.log('🧭 [Layout] MEASUREMENT_COMPLETE -> RECALCULATE_LAYOUT', {
                     measurementVersion: action.payload.measurementVersion,
@@ -1132,6 +1232,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 measurementVersion: action.payload.measurementVersion,
                 waitingForInitialMeasurements: false,
                 regionHeightPx: nextRegionHeightPx,
+                lastMeasurementCompleteVersion: version,
             };
             // Rebuild entries to ensure buckets are populated
             const recomputed = recomputeEntries({
