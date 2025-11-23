@@ -507,9 +507,56 @@ class MeasurementObserver {
 
     private measure = (): void => {
         const rect = this.node.getBoundingClientRect();
-        const height = rect.height > 0 ? rect.height : 0;
+        let height = rect.height > 0 ? rect.height : 0;
 
         const computed = typeof window !== 'undefined' ? window.getComputedStyle(this.node) : null;
+
+        // Add child margin spacing for accurate measurements
+        // getBoundingClientRect() includes padding/border but NOT child margins
+        // Child margins can "escape" parent's bounding box due to margin collapse
+        if (height > 0 && this.node.children.length > 0 && typeof window !== 'undefined') {
+            const firstChild = this.node.children[0] as HTMLElement;
+            const lastChild = this.node.children[this.node.children.length - 1] as HTMLElement;
+
+            const firstChildStyle = window.getComputedStyle(firstChild);
+            const lastChildStyle = window.getComputedStyle(lastChild);
+
+            // Get parent's padding to determine if margins collapse
+            const paddingTop = computed ? parseFloat(computed.paddingTop) : 0;
+            const paddingBottom = computed ? parseFloat(computed.paddingBottom) : 0;
+
+            // First child's top margin only escapes if parent has no top padding
+            const firstMarginTop = parseFloat(firstChildStyle.marginTop);
+            const effectiveFirstMargin = paddingTop > 0 ? 0 : Math.max(0, firstMarginTop);
+
+            // Last child's bottom margin only escapes if parent has no bottom padding
+            const lastMarginBottom = parseFloat(lastChildStyle.marginBottom);
+            const effectiveLastMargin = paddingBottom > 0 ? 0 : Math.max(0, lastMarginBottom);
+
+            const additionalHeight = effectiveFirstMargin + effectiveLastMargin;
+
+            if (additionalHeight > 0) {
+                const componentId = extractComponentId(this.key);
+                const isDebugComponent = componentId ? isComponentDebugEnabled(componentId) : false;
+
+                if (shouldLogMeasurements() && isDebugComponent) {
+                    console.log('[MeasurementObserver] 📐 Adding child margins:', {
+                        key: this.key,
+                        baseHeight: height.toFixed(2),
+                        firstMarginTop: firstMarginTop.toFixed(2),
+                        lastMarginBottom: lastMarginBottom.toFixed(2),
+                        effectiveFirstMargin: effectiveFirstMargin.toFixed(2),
+                        effectiveLastMargin: effectiveLastMargin.toFixed(2),
+                        additionalHeight: additionalHeight.toFixed(2),
+                        newHeight: (height + additionalHeight).toFixed(2),
+                        paddingTop: paddingTop.toFixed(2),
+                        paddingBottom: paddingBottom.toFixed(2),
+                    });
+                }
+
+                height += additionalHeight;
+            }
+        }
 
         // Debug: Check width constraints for image components
         const hasImages = this.node.querySelectorAll('img').length > 0;
