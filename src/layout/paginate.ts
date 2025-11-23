@@ -534,10 +534,13 @@ const computeSpan = (cursor: RegionCursor, estimatedHeight: number): RegionSpan 
 };
 
 const fitsInRegion = (span: RegionSpan, cursor: RegionCursor, componentId?: string): boolean => {
-    // Check if component + spacing buffer fits in region
-    // (cursor advances by span.bottom + COMPONENT_VERTICAL_SPACING_PX)
+    // Add safety buffer to account for measurement/rendering micro-differences
+    // Sub-pixel rendering and margin collapse can cause ~10-15px variations
+    const BOTTOM_ZONE_SAFETY_BUFFER_PX = 20;
+
+    // Check if component + spacing + safety buffer fits in region
     const cursorAfterPlacement = span.bottom + COMPONENT_VERTICAL_SPACING_PX;
-    const fits = cursorAfterPlacement <= cursor.maxHeight;
+    const fits = cursorAfterPlacement <= (cursor.maxHeight - BOTTOM_ZONE_SAFETY_BUFFER_PX);
 
     // CRITICAL: Log component-5 fitsInRegion checks
     if (isPaginationDebugEnabled() && componentId && (componentId === 'component-5' || componentId.includes('component-5'))) {
@@ -547,9 +550,11 @@ const fitsInRegion = (span: RegionSpan, cursor: RegionCursor, componentId?: stri
             spanHeight: span.height,
             cursorAfterPlacement,
             cursorMaxHeight: cursor.maxHeight,
+            safetyBuffer: BOTTOM_ZONE_SAFETY_BUFFER_PX,
+            effectiveMaxHeight: cursor.maxHeight - BOTTOM_ZONE_SAFETY_BUFFER_PX,
             fits,
             reason: fits ? 'FITS' : 'OVERFLOWS',
-            overflowAmount: cursorAfterPlacement - cursor.maxHeight,
+            overflowAmount: cursorAfterPlacement - (cursor.maxHeight - BOTTOM_ZONE_SAFETY_BUFFER_PX),
         });
     }
 

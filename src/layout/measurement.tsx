@@ -511,6 +511,36 @@ class MeasurementObserver {
 
         const computed = typeof window !== 'undefined' ? window.getComputedStyle(this.node) : null;
 
+        // Extract component ID once for all debug checks
+        const componentId = extractComponentId(this.key);
+        const isDebugComponent = componentId ? isComponentDebugEnabled(componentId) : false;
+
+        // DIAGNOSTIC: Log CSS context for component-11 to debug measurement discrepancies
+        if (shouldLogMeasurements() && isDebugComponent && componentId === 'component-11') {
+            const firstChild = this.node.children[0] as HTMLElement | undefined;
+            const firstChildStyle = firstChild ? window.getComputedStyle(firstChild) : null;
+
+            console.log('[MeasurementObserver] 🔬 CSS DIAGNOSTIC (component-11):', {
+                key: this.key,
+                wrapperHeight: height.toFixed(2),
+                wrapperCSS: {
+                    fontSize: computed?.fontSize,
+                    lineHeight: computed?.lineHeight,
+                    fontFamily: computed?.fontFamily?.substring(0, 30),
+                    display: computed?.display,
+                    boxSizing: computed?.boxSizing,
+                },
+                firstChildCSS: firstChild ? {
+                    tagName: firstChild.tagName,
+                    className: firstChild.className,
+                    fontSize: firstChildStyle?.fontSize,
+                    lineHeight: firstChildStyle?.lineHeight,
+                    padding: `${firstChildStyle?.paddingTop} ${firstChildStyle?.paddingBottom}`,
+                    height: firstChild.getBoundingClientRect().height.toFixed(2),
+                } : 'No children',
+            });
+        }
+
         // Add child margin spacing for accurate measurements
         // getBoundingClientRect() includes padding/border but NOT child margins
         // Child margins can "escape" parent's bounding box due to margin collapse
@@ -521,24 +551,24 @@ class MeasurementObserver {
             const firstChildStyle = window.getComputedStyle(firstChild);
             const lastChildStyle = window.getComputedStyle(lastChild);
 
-            // Get parent's padding to determine if margins collapse
+            // Get parent's padding AND border to determine if margins collapse
+            // Margins only escape if parent has NEITHER padding NOR border
             const paddingTop = computed ? parseFloat(computed.paddingTop) : 0;
             const paddingBottom = computed ? parseFloat(computed.paddingBottom) : 0;
+            const borderTop = computed ? parseFloat(computed.borderTopWidth) : 0;
+            const borderBottom = computed ? parseFloat(computed.borderBottomWidth) : 0;
 
-            // First child's top margin only escapes if parent has no top padding
+            // First child's top margin only escapes if parent has no top padding AND no top border
             const firstMarginTop = parseFloat(firstChildStyle.marginTop);
-            const effectiveFirstMargin = paddingTop > 0 ? 0 : Math.max(0, firstMarginTop);
+            const effectiveFirstMargin = (paddingTop > 0 || borderTop > 0) ? 0 : Math.max(0, firstMarginTop);
 
-            // Last child's bottom margin only escapes if parent has no bottom padding
+            // Last child's bottom margin only escapes if parent has no bottom padding AND no bottom border
             const lastMarginBottom = parseFloat(lastChildStyle.marginBottom);
-            const effectiveLastMargin = paddingBottom > 0 ? 0 : Math.max(0, lastMarginBottom);
+            const effectiveLastMargin = (paddingBottom > 0 || borderBottom > 0) ? 0 : Math.max(0, lastMarginBottom);
 
             const additionalHeight = effectiveFirstMargin + effectiveLastMargin;
 
             if (additionalHeight > 0) {
-                const componentId = extractComponentId(this.key);
-                const isDebugComponent = componentId ? isComponentDebugEnabled(componentId) : false;
-
                 if (shouldLogMeasurements() && isDebugComponent) {
                     console.log('[MeasurementObserver] 📐 Adding child margins:', {
                         key: this.key,
@@ -551,6 +581,8 @@ class MeasurementObserver {
                         newHeight: (height + additionalHeight).toFixed(2),
                         paddingTop: paddingTop.toFixed(2),
                         paddingBottom: paddingBottom.toFixed(2),
+                        borderTop: borderTop.toFixed(2),
+                        borderBottom: borderBottom.toFixed(2),
                     });
                 }
 
@@ -560,8 +592,6 @@ class MeasurementObserver {
 
         // Debug: Check width constraints for image components
         const hasImages = this.node.querySelectorAll('img').length > 0;
-        const componentId = extractComponentId(this.key);
-        const isDebugComponent = componentId ? isComponentDebugEnabled(componentId) : false;
 
         // Debug logging for image measurements (always log for debug components, even if warning doesn't fire)
         if (shouldLogMeasurements() && isDebugComponent && hasImages) {
