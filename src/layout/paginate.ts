@@ -2306,15 +2306,20 @@ export const paginate = ({
                 if (fits) {
                     // Filter out zero-height entries before committing (fits path)
                     // Components return null for 0-item entries, creating empty DOM elements
-                    const hasZeroHeight = span.height === 0 || (entry.regionContent && entry.regionContent.items.length === 0);
-
+                    // EXCEPTION: Metadata entries have 0 items but render real content (title, description)
+                    const isMetadataEntry = entry.regionContent?.kind?.includes('metadata') ?? false;
+                    const hasZeroItems = entry.regionContent && entry.regionContent.items.length === 0;
+                    const hasZeroHeight = span.height === 0 || (hasZeroItems && !isMetadataEntry);
+                    
                     if (hasZeroHeight) {
                         debugLog(entry.instance.id, '⏭️', 'skipping-zero-height-fits-path', {
                             runId,
                             regionKey: key,
-                            reason: 'Entry has 0 height or 0 items',
+                            reason: 'Entry has 0 height or 0 items (not metadata)',
                             spanHeight: span.height,
                             itemCount: entry.regionContent?.items.length ?? 'N/A',
+                            kind: entry.regionContent?.kind ?? 'N/A',
+                            isMetadata: isMetadataEntry,
                         });
                         // Don't create entry, continue to next component
                         continue;
@@ -2781,15 +2786,20 @@ export const paginate = ({
                         }
 
                         // Filter out zero-height entries (overflow path 1)
-                        const hasZeroHeight = span.height === 0 || (entry.regionContent && entry.regionContent.items.length === 0);
-
+                        // EXCEPTION: Metadata entries have 0 items but render real content
+                        const isMetadataEntry = entry.regionContent?.kind?.includes('metadata') ?? false;
+                        const hasZeroItems = entry.regionContent && entry.regionContent.items.length === 0;
+                        const hasZeroHeight = span.height === 0 || (hasZeroItems && !isMetadataEntry);
+                        
                         if (hasZeroHeight) {
                             debugLog(entry.instance.id, '⏭️', 'skipping-zero-height-overflow-path1', {
                                 runId,
                                 regionKey: key,
-                                reason: 'Entry has 0 height or 0 items',
+                                reason: 'Entry has 0 height or 0 items (not metadata)',
                                 spanHeight: span.height,
                                 itemCount: entry.regionContent?.items.length ?? 'N/A',
+                                kind: entry.regionContent?.kind ?? 'N/A',
+                                isMetadata: isMetadataEntry,
                             });
                             continue;
                         }
@@ -2892,15 +2902,20 @@ export const paginate = ({
                         }
 
                         // Filter out zero-height entries (overflow path 2)
-                        const hasZeroHeight = span.height === 0 || (entry.regionContent && entry.regionContent.items.length === 0);
-
+                        // EXCEPTION: Metadata entries have 0 items but render real content
+                        const isMetadataEntry = entry.regionContent?.kind?.includes('metadata') ?? false;
+                        const hasZeroItems = entry.regionContent && entry.regionContent.items.length === 0;
+                        const hasZeroHeight = span.height === 0 || (hasZeroItems && !isMetadataEntry);
+                        
                         if (hasZeroHeight) {
                             debugLog(entry.instance.id, '⏭️', 'skipping-zero-height-overflow-path2', {
                                 runId,
                                 regionKey: key,
-                                reason: 'Entry has 0 height or 0 items',
+                                reason: 'Entry has 0 height or 0 items (not metadata)',
                                 spanHeight: span.height,
                                 itemCount: entry.regionContent?.items.length ?? 'N/A',
+                                kind: entry.regionContent?.kind ?? 'N/A',
+                                isMetadata: isMetadataEntry,
                             });
                             continue;
                         }
@@ -3187,20 +3202,34 @@ export const paginate = ({
                     });
                 }
 
-                // Filter out entries with 0 items - components return null for empty items, creating zero-height entries
-                // Even metadata-only entries need at least 1 item to render (metadata is shown alongside items)
-                if (placedItems.length === 0) {
+                // Filter out entries with 0 items - components return null for empty items
+                // EXCEPTION: Metadata entries (spell-list-metadata, etc.) render title/description without items
+                const isMetadataEntry = entry.regionContent?.kind?.includes('metadata') ?? false;
+                
+                if (placedItems.length === 0 && !isMetadataEntry) {
                     debugLog(entry.instance.id, '⏭️', 'skipping empty entry', {
                         runId,
                         regionKey: key,
                         reason: 'Component returns null for empty items - would create zero-height entry',
                         metadataOnly: metadataOnlyPlacement,
+                        kind: entry.regionContent?.kind ?? 'N/A',
                     });
                     // Don't create entry, but still advance cursor if metadata was placed
                     if (metadataOnlyPlacement && placedHeight > 0) {
                         cursor.currentOffset += placedHeight + COMPONENT_VERTICAL_SPACING_PX;
                     }
                     continue;
+                }
+                
+                // Allow metadata entries to proceed even with 0 items
+                if (placedItems.length === 0 && isMetadataEntry) {
+                    debugLog(entry.instance.id, '✅', 'metadata-entry-with-zero-items', {
+                        runId,
+                        regionKey: key,
+                        reason: 'Metadata renders without items (title/description)',
+                        kind: entry.regionContent?.kind,
+                        placedHeight,
+                    });
                 }
 
                 // Fix 1: Check for duplicate before adding (Path 6: Placed entry from split)
