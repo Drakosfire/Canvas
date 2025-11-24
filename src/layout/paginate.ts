@@ -538,8 +538,9 @@ const fitsInRegion = (span: RegionSpan, cursor: RegionCursor, componentId?: stri
     // Sub-pixel rendering and margin collapse can cause ~10-15px variations
     const BOTTOM_ZONE_SAFETY_BUFFER_PX = 20;
 
-    // Check if component + spacing + safety buffer fits in region
-    const cursorAfterPlacement = span.bottom + COMPONENT_VERTICAL_SPACING_PX;
+    // Check if component + safety buffer fits in region
+    // CSS gap handles spacing between entries, so we only check entry bottom
+    const cursorAfterPlacement = span.bottom;
     const fits = cursorAfterPlacement <= (cursor.maxHeight - BOTTOM_ZONE_SAFETY_BUFFER_PX);
 
     // CRITICAL: Log component-5 fitsInRegion checks
@@ -562,7 +563,8 @@ const fitsInRegion = (span: RegionSpan, cursor: RegionCursor, componentId?: stri
 };
 
 const advanceCursor = (cursor: RegionCursor, span: RegionSpan) => {
-    cursor.currentOffset = span.bottom + COMPONENT_VERTICAL_SPACING_PX;
+    // CSS gap handles spacing between entries, so cursor tracks entry bottom directly
+    cursor.currentOffset = span.bottom;
 };
 
 const detachFromSource = (entry: CanvasLayoutEntry, key: string, buckets: Map<string, CanvasLayoutEntry[]>) => {
@@ -631,8 +633,17 @@ const findBestListSplit = (
         !entry.regionContent!.isContinuation;
     const minimumSplit = hasIntroMetadata ? 0 : 1;
 
+    // NEW: Spell-aware chunking - limit spell lists to 2 spells per segment
+    // This prevents large measurement error compounding and creates more balanced layouts
+    const isSpellList = entry.regionContent!.kind === 'spell-list';
+    const MAX_SPELLS_PER_CHUNK = 2;
+    const maxSplit = isSpellList
+        ? Math.min(items.length, MAX_SPELLS_PER_CHUNK)
+        : items.length;
+
     // Try splits from largest to smallest (greedy: maximize items in current region)
-    for (let splitAt = items.length; splitAt >= minimumSplit; splitAt--) {
+    // For spell lists, this is capped at MAX_SPELLS_PER_CHUNK
+    for (let splitAt = maxSplit; splitAt >= minimumSplit; splitAt--) {
         const firstSegment = items.slice(0, splitAt);
         const secondSegment = items.slice(splitAt);
 
@@ -675,9 +686,8 @@ const findBestListSplit = (
 
         const firstSegmentHeight = measured?.height ?? proportionalHeight ?? estimated;
         const firstSegmentTop = currentOffset;
-        // Account for spacing buffer that gets added after component placement
-        // (cursor advances by height + spacing, not just height)
-        const firstSegmentBottom = firstSegmentTop + firstSegmentHeight + COMPONENT_VERTICAL_SPACING_PX;
+        // CSS gap handles spacing, so cursor tracks entry bottom directly
+        const firstSegmentBottom = firstSegmentTop + firstSegmentHeight;
 
         // Track which height calculation path was used
         const heightSource = measured ? 'measured' : proportionalHeight ? 'proportional' : 'estimate';
@@ -1351,8 +1361,8 @@ export const paginate = ({
                 });
                 const lastPlacedEntry = alreadyPlacedEntries[alreadyPlacedEntries.length - 1];
                 if (lastPlacedEntry.span) {
-                    // Initialize cursor to bottom of last placed entry + spacing
-                    cursor.currentOffset = lastPlacedEntry.span.bottom + COMPONENT_VERTICAL_SPACING_PX;
+                    // Initialize cursor to bottom of last placed entry (CSS gap handles spacing)
+                    cursor.currentOffset = lastPlacedEntry.span.bottom;
 
                     // FIX: Reset cursor if it exceeds new region height (race condition protection)
                     // This handles the case where regionHeightPx changed between pagination runs,
@@ -1486,13 +1496,13 @@ export const paginate = ({
                     // skipped entries to handle cases where entries are processed out of order or
                     // cursor initialization doesn't account for all skipped entries
                     if (!heightChanged && !wouldOverflow) {
-                        // Advance cursor to bottom of skipped entry + spacing
-                        const entryBottomWithSpacing = entryBottom + COMPONENT_VERTICAL_SPACING_PX;
+                        // Advance cursor to bottom of skipped entry (CSS gap handles spacing)
+                        const entryBottom = entryTop + currentHeight;
                         const prevCursorOffset = cursor.currentOffset;
 
                         // Only advance if skipped entry extends beyond current cursor position
-                        if (entryBottomWithSpacing > cursor.currentOffset) {
-                            cursor.currentOffset = entryBottomWithSpacing;
+                        if (entryBottom > cursor.currentOffset) {
+                            cursor.currentOffset = entryBottom;
 
                             if (isCursorDebugEnabled()) {
                                 // Cursor debug: Always log cursor advancement when cursor flag enabled
@@ -1519,9 +1529,9 @@ export const paginate = ({
 
                         // CRITICAL FIX: Advance cursor even when skipping entries
                         // The cursor must reflect the actual position of skipped entries to maintain consistency
-                        // This ensures cursor matches the visual position, not just initialization point
+                        // This ensures cursor matches the visual position (CSS gap handles spacing)
                         if (placedSpan.bottom > cursor.currentOffset) {
-                            cursor.currentOffset = placedSpan.bottom + COMPONENT_VERTICAL_SPACING_PX;
+                            cursor.currentOffset = placedSpan.bottom;
                             if (isPaginationDebugEnabled() && shouldDebugComponent(peekedEntry.instance.id)) {
                                 debugLog(peekedEntry.instance.id, '⏭️', 'entry-skipped-cursor-advanced', {
                                     runId,
@@ -1780,7 +1790,7 @@ export const paginate = ({
                     // Recalculate bottom using current height (measurements may have changed)
                     // This ensures we detect overflow even if the entry's height increased
                     const entryBottom = entryTop + currentHeight;
-                    const entryBottomWithSpacing = entryBottom + COMPONENT_VERTICAL_SPACING_PX;
+                    // CSS gap handles spacing, so we check entry bottom directly
 
                     // CRITICAL: Check if already-placed entry overflows its region
                     // Use the RECALCULATED bottom (with current height) to detect overflow
@@ -1796,7 +1806,6 @@ export const paginate = ({
                             regionKey: key,
                             entryTop,
                             entryBottom,
-                            entryBottomWithSpacing,
                             regionHeightPx,
                             entryOverflows,
                             overflowAmount: rawOverflowAmount, // positive = overflow, negative = fits
@@ -1905,9 +1914,9 @@ export const paginate = ({
 
                     // Entry fits or couldn't be routed - keep it and advance cursor
                     // CRITICAL: Advance cursor to account for this already-placed entry
-                    // Otherwise, subsequent entries will be placed at incorrect positions
-                    if (entryBottomWithSpacing > cursor.currentOffset) {
-                        cursor.currentOffset = entryBottomWithSpacing;
+                    // Otherwise, subsequent entries will be placed at incorrect positions (CSS gap handles spacing)
+                    if (entryBottom > cursor.currentOffset) {
+                        cursor.currentOffset = entryBottom;
                         if (isCursorDebugEnabled()) {
                             // Cursor debug: Always log cursor advancement when cursor flag enabled
                             logPaginationDecision(runId, 'cursor-advanced-for-already-placed-entry', {
@@ -2248,9 +2257,9 @@ export const paginate = ({
                         spanTop: span.top,
                         spanBottom: span.bottom,
                         spanHeight: span.height,
-                        cursorAfterAdvance: span.bottom + COMPONENT_VERTICAL_SPACING_PX,
+                        cursorAfterAdvance: span.bottom,
                         regionHeightPx: cursor.maxHeight,
-                        willFit: (span.bottom + COMPONENT_VERTICAL_SPACING_PX) <= cursor.maxHeight,
+                        willFit: span.bottom <= cursor.maxHeight,
                     });
                 }
 
@@ -2264,9 +2273,9 @@ export const paginate = ({
                         spanTop: span.top,
                         spanBottom: span.bottom,
                         spanHeight: span.height,
-                        cursorAfterAdvance: span.bottom + COMPONENT_VERTICAL_SPACING_PX,
+                        cursorAfterAdvance: span.bottom,
                         regionHeightPx: cursor.maxHeight,
-                        willFit: (span.bottom + COMPONENT_VERTICAL_SPACING_PX) <= cursor.maxHeight,
+                        willFit: span.bottom <= cursor.maxHeight,
                         previousEntryId: columnEntries[columnEntries.length - 1]?.instance.id,
                         previousEntryBottom: columnEntries[columnEntries.length - 1]?.span?.bottom,
                     });
@@ -2303,6 +2312,142 @@ export const paginate = ({
                     },
                 });
 
+                // NEW: Proactive spell-list chunking - split even if it fits
+                // Force spell lists to split into MAX_SPELLS_PER_CHUNK (2) segments
+                // This ensures consistent chunking regardless of available space
+                const MAX_SPELLS_PER_CHUNK = 2;
+                const isSpellList = entry.regionContent?.kind === 'spell-list';
+                const exceedsMaxChunk = isSpellList &&
+                    entry.regionContent &&
+                    entry.regionContent.items.length > MAX_SPELLS_PER_CHUNK;
+
+                if (fits && exceedsMaxChunk) {
+                    // Even though it fits, force a split for spell lists exceeding max chunk size
+                    debugLog(entry.instance.id, '✂️', 'proactive-spell-split', {
+                        runId,
+                        regionKey: key,
+                        itemCount: entry.regionContent!.items.length,
+                        maxChunkSize: MAX_SPELLS_PER_CHUNK,
+                        reason: 'Spell list exceeds max chunk size, splitting even though it fits',
+                    });
+
+                    // Call the split function to get the proper 2-item split
+                    const forcedSplitDecision = findBestListSplit(entry, cursor, regionHeightPx, measurements, adapters);
+
+                    if (forcedSplitDecision.canPlace && forcedSplitDecision.placedItems.length > 0) {
+                        // Place the first 2 spells
+                        const splitRegionContent = toRegionContent(
+                            entry.regionContent!.kind,
+                            forcedSplitDecision.placedItems,
+                            entry.regionContent!.startIndex,
+                            entry.regionContent!.totalCount,
+                            entry.regionContent!.isContinuation,
+                            entry.regionContent!.metadata
+                        );
+
+                        const splitEntry: CanvasLayoutEntry = {
+                            ...entry,
+                            regionContent: splitRegionContent,
+                            measurementKey: computeMeasurementKey(entry.instance.id, splitRegionContent),
+                        };
+
+                        // Update span for the split segment
+                        const splitHeight = forcedSplitDecision.placedHeight;
+                        const splitSpan: RegionSpan = {
+                            top: cursor.currentOffset,
+                            bottom: cursor.currentOffset + splitHeight,
+                            height: splitHeight,
+                        };
+
+                        // Commit the split entry
+                        const committedSplitEntry: CanvasLayoutEntry = {
+                            ...splitEntry,
+                            region: {
+                                page: page.pageNumber,
+                                column: column.columnNumber,
+                                index: columnEntries.length,
+                            },
+                            span: splitSpan,
+                            overflow: false,
+                            listContinuation: {
+                                isContinuation: splitRegionContent.isContinuation,
+                                startIndex: splitRegionContent.startIndex,
+                                totalCount: splitRegionContent.totalCount,
+                            },
+                            sourceRegionKey: column.key,
+                        };
+
+                        columnEntries.push(committedSplitEntry);
+                        advanceCursor(cursor, splitSpan);
+
+                        debugLog(entry.instance.id, '📦', 'placed segment', {
+                            runId,
+                            regionKey: key,
+                            measurementKey: committedSplitEntry.measurementKey,
+                            span: splitSpan,
+                            cursorOffset: cursor.currentOffset,
+                            remainingItems: forcedSplitDecision.remainingItems.length,
+                            overflow: false,
+                            overflowRouted: false,
+                            clearedOverflow: false,
+                        });
+
+                        // Queue the continuation for the next region
+                        if (forcedSplitDecision.remainingItems.length > 0) {
+                            let nextRegion = findNextRegion(pages, key);
+
+                            // Create new page if no next region exists (same as overflow path)
+                            if (!nextRegion) {
+                                const newPageNumber = pages.length + 1;
+                                ensurePage(pages, newPageNumber, columnCount, pendingQueues, runId, 'proactive-split-no-next-region');
+                                nextRegion = findNextRegion(pages, key);
+                            }
+
+                            if (nextRegion) {
+                                const continuationContent = toRegionContent(
+                                    entry.regionContent!.kind,
+                                    forcedSplitDecision.remainingItems,
+                                    entry.regionContent!.startIndex + forcedSplitDecision.placedItems.length,
+                                    entry.regionContent!.totalCount,
+                                    true, // isContinuation
+                                    undefined // no metadata for continuations
+                                );
+
+                                const continuationEntry: CanvasLayoutEntry = {
+                                    ...entry,
+                                    regionContent: continuationContent,
+                                    measurementKey: computeMeasurementKey(entry.instance.id, continuationContent),
+                                    overflow: false,
+                                };
+
+                                const targetPendingQueue = getPendingQueue(nextRegion.key);
+                                targetPendingQueue.push(continuationEntry);
+
+                                debugLog(entry.instance.id, '📬', 'queued continuation segment', {
+                                    runId,
+                                    fromRegion: key,
+                                    toRegion: nextRegion.key,
+                                    remainingCount: forcedSplitDecision.remainingItems.length,
+                                    estimatedHeight: forcedSplitDecision.remainingItems.length * 70, // rough estimate
+                                    overflow: false,
+                                    overflowRouted: true,
+                                });
+                            } else {
+                                // Log if we still can't find a next region after page creation
+                                debugLog(entry.instance.id, '⚠️', 'proactive-split-no-next-region-after-creation', {
+                                    runId,
+                                    regionKey: key,
+                                    remainingCount: forcedSplitDecision.remainingItems.length,
+                                    pagesCount: pages.length,
+                                });
+                            }
+                        }
+
+                        // Continue to next entry in queue
+                        continue;
+                    }
+                }
+
                 if (fits) {
                     // Filter out zero-height entries before committing (fits path)
                     // Components return null for 0-item entries, creating empty DOM elements
@@ -2310,7 +2455,7 @@ export const paginate = ({
                     const isMetadataEntry = entry.regionContent?.kind?.includes('metadata') ?? false;
                     const hasZeroItems = entry.regionContent && entry.regionContent.items.length === 0;
                     const hasZeroHeight = span.height === 0 || (hasZeroItems && !isMetadataEntry);
-                    
+
                     if (hasZeroHeight) {
                         debugLog(entry.instance.id, '⏭️', 'skipping-zero-height-fits-path', {
                             runId,
@@ -2790,7 +2935,7 @@ export const paginate = ({
                         const isMetadataEntry = entry.regionContent?.kind?.includes('metadata') ?? false;
                         const hasZeroItems = entry.regionContent && entry.regionContent.items.length === 0;
                         const hasZeroHeight = span.height === 0 || (hasZeroItems && !isMetadataEntry);
-                        
+
                         if (hasZeroHeight) {
                             debugLog(entry.instance.id, '⏭️', 'skipping-zero-height-overflow-path1', {
                                 runId,
@@ -2862,7 +3007,7 @@ export const paginate = ({
                         }
 
                         // Mark the column as full so subsequent entries route elsewhere
-                        cursor.currentOffset = regionHeightPx + COMPONENT_VERTICAL_SPACING_PX;
+                        cursor.currentOffset = regionHeightPx;
                         const forcedRouteKey = routeOverflowToNextRegion({ forceAdvance: true });
                         const movedRemainingToRegion = moveRemainingToRegion(forcedRouteKey ?? null);
                         logPaginationDecision(runId, 'force-route', {
@@ -2906,7 +3051,7 @@ export const paginate = ({
                         const isMetadataEntry = entry.regionContent?.kind?.includes('metadata') ?? false;
                         const hasZeroItems = entry.regionContent && entry.regionContent.items.length === 0;
                         const hasZeroHeight = span.height === 0 || (hasZeroItems && !isMetadataEntry);
-                        
+
                         if (hasZeroHeight) {
                             debugLog(entry.instance.id, '⏭️', 'skipping-zero-height-overflow-path2', {
                                 runId,
@@ -2977,7 +3122,7 @@ export const paginate = ({
                             columnEntries.push(committedEntry);
                         }
                         // Mark region as full to prevent subsequent entries from overlapping
-                        cursor.currentOffset = regionHeightPx + COMPONENT_VERTICAL_SPACING_PX;
+                        cursor.currentOffset = regionHeightPx;
                         logPaginationDecision(runId, 'region-full-no-next', {
                             componentId: entry.instance.id,
                             regionKey: key,
@@ -3149,7 +3294,7 @@ export const paginate = ({
                             regionKey: key,
                             overflow: true,
                         });
-                        cursor.currentOffset = regionHeightPx + COMPONENT_VERTICAL_SPACING_PX;
+                        cursor.currentOffset = regionHeightPx;
                     }
                     continue;
                 }
@@ -3205,7 +3350,7 @@ export const paginate = ({
                 // Filter out entries with 0 items - components return null for empty items
                 // EXCEPTION: Metadata entries (spell-list-metadata, etc.) render title/description without items
                 const isMetadataEntry = entry.regionContent?.kind?.includes('metadata') ?? false;
-                
+
                 if (placedItems.length === 0 && !isMetadataEntry) {
                     debugLog(entry.instance.id, '⏭️', 'skipping empty entry', {
                         runId,
@@ -3214,13 +3359,13 @@ export const paginate = ({
                         metadataOnly: metadataOnlyPlacement,
                         kind: entry.regionContent?.kind ?? 'N/A',
                     });
-                    // Don't create entry, but still advance cursor if metadata was placed
+                    // Don't create entry, but still advance cursor if metadata was placed (CSS gap handles spacing)
                     if (metadataOnlyPlacement && placedHeight > 0) {
-                        cursor.currentOffset += placedHeight + COMPONENT_VERTICAL_SPACING_PX;
+                        cursor.currentOffset += placedHeight;
                     }
                     continue;
                 }
-                
+
                 // Allow metadata entries to proceed even with 0 items
                 if (placedItems.length === 0 && isMetadataEntry) {
                     debugLog(entry.instance.id, '✅', 'metadata-entry-with-zero-items', {

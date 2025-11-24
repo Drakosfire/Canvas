@@ -92,6 +92,9 @@ const CanvasPage: React.FC<CanvasPageProps> = ({ layoutPlan, renderEntry }) => {
                                             key={`${entry.instance.id}:${entry.region?.page ?? page.pageNumber}:${entry.region?.index ?? index}`}
                                             className="canvas-entry"
                                             data-entry-id={entry.instance.id}
+                                            data-measurement-key={entry.measurementKey}
+                                            data-start-index={entry.regionContent?.startIndex ?? 0}
+                                            data-is-continuation={entry.regionContent?.isContinuation ?? false}
                                             data-span-top={entry.span?.top ?? 'undefined'}
                                             data-span-bottom={entry.span?.bottom ?? 'undefined'}
                                             data-region-key={`${entry.region?.page ?? '?'}:${entry.region?.column ?? '?'}`}
