@@ -152,6 +152,7 @@ export interface CanvasLayoutState {
     } | null;
     measurements: Map<MeasurementKey, MeasurementRecord>;
     measurementVersion: number;
+    lastMeasurementCompleteVersion: number;
     layoutPlan: LayoutPlan | null;
     pendingLayout: LayoutPlan | null;
     measurementEntries: MeasurementEntry[];

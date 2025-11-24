@@ -5,6 +5,7 @@ import type { RegionListContent } from '../../types/canvas.types';
 import type { CanvasAdapters } from '../../types/adapters.types';
 import { createDefaultAdapters } from '../../types/adapters.types';
 import { paginate } from '../paginate';
+import { COMPONENT_VERTICAL_SPACING_PX } from '../utils';
 
 // Generic mock item type for testing
 interface MockItem {
@@ -44,6 +45,30 @@ const createListEntry = (id: string, items: MockItem[], estimatedHeight: number,
             isContinuation: false,
         } as RegionListContent,
         measurementKey: `${id}:test-list:0:${items.length}:${items.length}`,
+        ...overrides,
+    });
+
+const createListSegmentEntry = (
+    id: string,
+    measurementKey: string,
+    startIndex: number,
+    segmentLength: number,
+    totalCount: number,
+    estimatedHeight: number,
+    overrides: Partial<CanvasLayoutEntry> = {}
+): CanvasLayoutEntry =>
+    createEntry(id, estimatedHeight, {
+        regionContent: {
+            kind: 'test-list',
+            items: Array.from({ length: segmentLength }, (_, index) => ({
+                id: String(startIndex + index + 1),
+                name: `Item ${startIndex + index + 1}`,
+            })) as unknown[],
+            startIndex,
+            totalCount,
+            isContinuation: startIndex > 0,
+        } as RegionListContent,
+        measurementKey,
         ...overrides,
     });
 
@@ -148,8 +173,81 @@ describe('paginate', () => {
         expect(continuationEntry.listContinuation?.totalCount).toBe(items.length);
     });
 
+    it('retains multiple list segments with the same instance id when measurement keys differ', () => {
+        const totalCount = 5;
+        const baseSegment = createListSegmentEntry(
+            'component-7',
+            'component-7:test-list:0:2:5:base',
+            0,
+            2,
+            totalCount,
+            220,
+            { orderIndex: 0 }
+        );
+
+        const continuationSegment = createListSegmentEntry(
+            'component-7',
+            'component-7:test-list:2:3:5:cont',
+            2,
+            3,
+            totalCount,
+            230,
+            { orderIndex: 1 }
+        );
+
+        const plan = runPaginate([baseSegment, continuationSegment], 1, 600, 1);
+        const columnEntries = plan.pages[0].columns[0].entries.filter((entry) => entry.instance.id === 'component-7');
+
+        expect(columnEntries).toHaveLength(2);
+        expect(columnEntries.map((entry) => entry.measurementKey)).toEqual([
+            'component-7:test-list:0:2:5:base',
+            'component-7:test-list:2:3:5:cont',
+        ]);
+        expect(columnEntries[0].listContinuation?.isContinuation).toBe(false);
+        expect(columnEntries[1].listContinuation?.isContinuation).toBe(true);
+    });
+
     it('uses requested page count when greater than the computed layout', () => {
         const plan = runPaginate([createEntry('only', 200)], 1, 800, 3);
         expect(plan.pages).toHaveLength(3);
+    });
+
+    it('treats boundary-aligned spans as fitting within the region height', () => {
+        const regionHeight = 320;
+        const firstEntryHeight = 180;
+        const first = createEntry('component-3', firstEntryHeight, { orderIndex: 0 });
+
+        const cursorBeforeSecond = firstEntryHeight + COMPONENT_VERTICAL_SPACING_PX;
+        const secondEntryHeight = regionHeight - COMPONENT_VERTICAL_SPACING_PX - cursorBeforeSecond;
+        expect(secondEntryHeight).toBeGreaterThan(0);
+
+        const second = createEntry('component-4', secondEntryHeight, { orderIndex: 1 });
+
+        const plan = runPaginate([first, second], 1, regionHeight, 1);
+        const firstPageEntries = plan.pages[0].columns[0].entries;
+
+        expect(firstPageEntries).toHaveLength(2);
+        const fittedEntry = firstPageEntries[1];
+        expect(fittedEntry.instance.id).toBe('component-4');
+        expect(fittedEntry.overflow).toBeFalsy();
+        expect(fittedEntry.span?.bottom).toBeCloseTo(regionHeight - COMPONENT_VERTICAL_SPACING_PX, 5);
+    });
+
+    it('reroutes overflowing home-region components to the sibling column before advancing pages', () => {
+        const regionHeight = 500;
+        const columnCount = 2;
+        const anchor = createEntry('component-3', 420, { orderIndex: 0 });
+        const overflowing = createEntry('component-4', 200, { orderIndex: 1 });
+
+        const plan = runPaginate([anchor, overflowing], columnCount, regionHeight, 1);
+        const firstPage = plan.pages[0];
+        const columnTwoEntries = firstPage.columns[1].entries.filter((entry) => entry.instance.id === 'component-4');
+        expect(columnTwoEntries.length).toBe(1);
+        const rerouted = columnTwoEntries[0];
+        expect(rerouted.region.column).toBe(2);
+        expect(rerouted.region.page).toBe(1);
+        expect(rerouted.span?.top ?? -1).toBe(0);
+        expect(rerouted.span?.bottom ?? -1).toBeGreaterThan(0);
+        expect(rerouted.sourceRegionKey).toBe('1:2');
     });
 });

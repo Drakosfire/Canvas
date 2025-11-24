@@ -1,6 +1,7 @@
 type DebugChannel =
     | 'paginate-spellcasting'
     | 'measurement-spellcasting'
+    | 'measurement'
     | 'planner-spellcasting'
     | 'layout-dirty'
     | 'measure-first'
@@ -19,6 +20,7 @@ interface CanvasDebugGlobal {
 const DEBUG_DEFAULTS: Record<DebugChannel, boolean> = {
     'paginate-spellcasting': false,
     'measurement-spellcasting': false,
+    'measurement': false,
     'planner-spellcasting': false,
     'layout-dirty': false,
     'measure-first': false,
@@ -32,6 +34,7 @@ const DEBUG_DEFAULTS: Record<DebugChannel, boolean> = {
 const ENV_VAR_MAP: Partial<Record<DebugChannel, string>> = {
     'paginate-spellcasting': 'CANVAS_DEBUG_PAGINATE',
     'measurement-spellcasting': 'CANVAS_DEBUG_MEASUREMENT',
+    'measurement': 'CANVAS_DEBUG_MEASUREMENT_GENERAL',
     'planner-spellcasting': 'CANVAS_DEBUG_PLANNER',
     'layout-dirty': 'CANVAS_DEBUG_LAYOUT',
     'measure-first': 'CANVAS_DEBUG_MEASURE_FIRST',
@@ -45,6 +48,7 @@ const ENV_VAR_MAP: Partial<Record<DebugChannel, string>> = {
 const REACT_APP_ENV_VAR_MAP: Partial<Record<DebugChannel, string>> = {
     'paginate-spellcasting': 'REACT_APP_CANVAS_DEBUG_PAGINATE',
     'measurement-spellcasting': 'REACT_APP_CANVAS_DEBUG_MEASUREMENT',
+    'measurement': 'REACT_APP_CANVAS_DEBUG_MEASUREMENT_GENERAL',
     'planner-spellcasting': 'REACT_APP_CANVAS_DEBUG_PLANNER',
     'layout-dirty': 'REACT_APP_CANVAS_DEBUG_LAYOUT',
     'measure-first': 'REACT_APP_CANVAS_DEBUG_MEASURE_FIRST',
@@ -95,6 +99,9 @@ const readEnvFlag = (channel: DebugChannel): boolean | undefined => {
         case 'measurement-spellcasting':
             // React Scripts replaces process.env.REACT_APP_* at build time
             reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_MEASUREMENT;
+            break;
+        case 'measurement':
+            reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_MEASUREMENT_GENERAL;
             break;
         case 'planner-spellcasting':
             // React Scripts replaces process.env.REACT_APP_* at build time
