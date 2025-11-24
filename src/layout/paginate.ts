@@ -2304,6 +2304,22 @@ export const paginate = ({
                 });
 
                 if (fits) {
+                    // Filter out zero-height entries before committing (fits path)
+                    // Components return null for 0-item entries, creating empty DOM elements
+                    const hasZeroHeight = span.height === 0 || (entry.regionContent && entry.regionContent.items.length === 0);
+
+                    if (hasZeroHeight) {
+                        debugLog(entry.instance.id, '⏭️', 'skipping-zero-height-fits-path', {
+                            runId,
+                            regionKey: key,
+                            reason: 'Entry has 0 height or 0 items',
+                            spanHeight: span.height,
+                            itemCount: entry.regionContent?.items.length ?? 'N/A',
+                        });
+                        // Don't create entry, continue to next component
+                        continue;
+                    }
+
                     paginationStats.componentsPlaced++;
 
                     const committedEntry: CanvasLayoutEntry = {
@@ -2764,6 +2780,20 @@ export const paginate = ({
                             break;
                         }
 
+                        // Filter out zero-height entries (overflow path 1)
+                        const hasZeroHeight = span.height === 0 || (entry.regionContent && entry.regionContent.items.length === 0);
+
+                        if (hasZeroHeight) {
+                            debugLog(entry.instance.id, '⏭️', 'skipping-zero-height-overflow-path1', {
+                                runId,
+                                regionKey: key,
+                                reason: 'Entry has 0 height or 0 items',
+                                spanHeight: span.height,
+                                itemCount: entry.regionContent?.items.length ?? 'N/A',
+                            });
+                            continue;
+                        }
+
                         const committedEntry: CanvasLayoutEntry = {
                             ...entry,
                             region: {
@@ -2860,6 +2890,21 @@ export const paginate = ({
                                 componentCountBefore: columnEntries.filter(e => e.instance.id === entry.instance.id).length,
                             });
                         }
+
+                        // Filter out zero-height entries (overflow path 2)
+                        const hasZeroHeight = span.height === 0 || (entry.regionContent && entry.regionContent.items.length === 0);
+
+                        if (hasZeroHeight) {
+                            debugLog(entry.instance.id, '⏭️', 'skipping-zero-height-overflow-path2', {
+                                runId,
+                                regionKey: key,
+                                reason: 'Entry has 0 height or 0 items',
+                                spanHeight: span.height,
+                                itemCount: entry.regionContent?.items.length ?? 'N/A',
+                            });
+                            continue;
+                        }
+
                         const committedEntry: CanvasLayoutEntry = {
                             ...entry,
                             region: {
