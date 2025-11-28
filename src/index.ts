@@ -65,6 +65,16 @@ export type {
 export { createStateDebugger, exposeStateDebugger } from './layout/stateDebug';
 export type { StateSummary, StateWarning, StateDebugger } from './layout/stateDebug';
 
+// State Selectors (Phase 3.3: Derivable state)
+export {
+    selectRequiredMeasurementKeys,
+    selectMissingMeasurementKeys,
+    selectAllComponentsMeasured,
+    selectMeasurementStats,
+    selectNeedsRecalculation,
+    verifySelectorsMatchState,
+} from './layout/selectors';
+
 // Pagination Diagnostics (Phase 4: Pagination Polish)
 export {
     diagnosePagination,

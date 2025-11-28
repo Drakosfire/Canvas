@@ -6,6 +6,7 @@
  */
 
 import type { CanvasLayoutState, MeasurementKey } from './types';
+import { verifySelectorsMatchState, selectMeasurementStats } from './selectors';
 
 export interface StateSummary {
     // Core counts
@@ -35,12 +36,23 @@ export interface StateWarning {
     details?: Record<string, unknown>;
 }
 
+export interface SelectorVerification {
+    requiredKeysMatch: boolean;
+    missingKeysMatch: boolean;
+    allMeasuredMatch: boolean;
+    issues: string[];
+}
+
 export interface StateDebugger {
     summary: () => StateSummary;
     warnings: () => StateWarning[];
     getMeasurement: (key: MeasurementKey) => number | null;
     listMeasurements: () => Array<{ key: string; height: number }>;
     getState: () => CanvasLayoutState;
+    /** Phase 3.3: Verify selectors match stored state */
+    verifySelectors: () => SelectorVerification;
+    /** Phase 3.3: Get measurement stats from selectors */
+    measurementStats: () => ReturnType<typeof selectMeasurementStats>;
 }
 
 /**
@@ -125,6 +137,16 @@ export const createStateDebugger = (state: CanvasLayoutState): StateDebugger => 
             }
         }
         
+        // Phase 3.3: Verify selectors match state (detect sync bugs)
+        const selectorVerification = verifySelectorsMatchState(state);
+        if (selectorVerification.issues.length > 0) {
+            warnings.push({
+                level: 'error',
+                message: 'Selector/state mismatch detected',
+                details: { issues: selectorVerification.issues },
+            });
+        }
+        
         return warnings;
     },
     
@@ -142,6 +164,10 @@ export const createStateDebugger = (state: CanvasLayoutState): StateDebugger => 
     },
     
     getState: () => state,
+    
+    verifySelectors: () => verifySelectorsMatchState(state),
+    
+    measurementStats: () => selectMeasurementStats(state),
 });
 
 /**
