@@ -200,7 +200,7 @@ describe('structuralStyles', () => {
 
         it('box-sizing is consistent across all styles', () => {
             const width = 300;
-            
+
             const columnStyles = createColumnStructuralStyles(width);
             const pageStyles = createPageStructuralStyles(800, 1000);
             const wrapperStyles = createColumnWrapperStructuralStyles(12, 950);

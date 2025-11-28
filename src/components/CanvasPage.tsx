@@ -94,10 +94,10 @@ const CanvasPage: React.FC<CanvasPageProps> = ({ layoutPlan, renderEntry, column
                     <div className="columnWrapper">
                         <div className="monster frame wide" data-page-columns={page.columns.length}>
                             {page.columns.map((column) => (
-                                <div 
-                                    key={column.key} 
-                                    className="canvas-column" 
-                                    data-column-key={column.key} 
+                                <div
+                                    key={column.key}
+                                    className="canvas-column"
+                                    data-column-key={column.key}
                                     data-column-number={column.columnNumber}
                                     style={columnWidthPx != null ? createColumnStructuralStyles(columnWidthPx) : undefined}
                                 >

@@ -260,7 +260,7 @@ export const assertWidthsMatch = (
 ): void => {
     if (!widthsMatch(measurementWidth, visibleWidth)) {
         const message = `[Canvas] Width mismatch: measurement=${measurementWidth}px, visible=${visibleWidth}px${context ? ` (${context})` : ''}`;
-        
+
         if (process.env.NODE_ENV !== 'production') {
             // eslint-disable-next-line no-console
             console.error(message);
