@@ -32,6 +32,7 @@ import { isDebugEnabled } from './debugFlags';
 import { logRegionHeightEvent } from './regionHeightDebug';
 import { exposeStateDebugger } from './stateDebug';
 import { exposePaginationDiagnostics } from './paginationDiagnostics';
+import { selectRequiredMeasurementKeys } from './selectors';
 
 const shouldLogPlanCommit = (): boolean => isDebugEnabled('plan-commit');
 
@@ -913,7 +914,8 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
 
             const nextVersion = state.measurementVersion + 1;
 
-            const requiredKeys = state.requiredMeasurementKeys;
+            // Phase 3.3b: Use selector instead of stored state field
+            const requiredKeys = selectRequiredMeasurementKeys(state);
             const missingKeys = computeMissingMeasurementKeys(requiredKeys, measurements);
 
             // Check if we now have ALL component block measurements
@@ -1144,8 +1146,8 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                     nextMeasurements.delete(key);
                 }
             });
-            // Recompute missing keys with updated map
-            const missing = computeMissingMeasurementKeys(state.requiredMeasurementKeys, nextMeasurements);
+            // Recompute missing keys with updated map (Phase 3.3b: use selector)
+            const missing = computeMissingMeasurementKeys(selectRequiredMeasurementKeys(state), nextMeasurements);
             return {
                 ...state,
                 measurements: nextMeasurements,

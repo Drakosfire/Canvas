@@ -6,7 +6,13 @@
  */
 
 import type { CanvasLayoutState, MeasurementKey } from './types';
-import { verifySelectorsMatchState, selectMeasurementStats } from './selectors';
+import {
+    verifySelectorsMatchState,
+    selectMeasurementStats,
+    selectRequiredMeasurementKeys,
+    selectMissingMeasurementKeys,
+    selectAllComponentsMeasured,
+} from './selectors';
 
 export interface StateSummary {
     // Core counts
@@ -57,29 +63,36 @@ export interface StateDebugger {
 
 /**
  * Create a state debugger for the given canvas state.
+ * 
+ * Phase 3.3b: Uses selectors for derived values instead of stored state fields.
  */
 export const createStateDebugger = (state: CanvasLayoutState): StateDebugger => ({
-    summary: () => ({
-        // Core counts
-        componentCount: state.components.length,
-        dataSourceCount: state.dataSources.length,
-        pageCount: state.layoutPlan?.pages.length ?? 0,
+    summary: () => {
+        // Use selectors for derived values (Phase 3.3b)
+        const stats = selectMeasurementStats(state);
         
-        // Measurement status
-        measurementStatus: state.measurementStatus ?? 'unknown',
-        measurementCount: state.measurements.size,
-        requiredMeasurementCount: state.requiredMeasurementKeys.size,
-        missingMeasurementCount: state.missingMeasurementKeys.size,
-        
-        // Layout status
-        isLayoutDirty: state.isLayoutDirty,
-        hasPendingLayout: state.pendingLayout !== null,
-        bucketCount: state.buckets.size,
-        
-        // Flags
-        allComponentsMeasured: state.allComponentsMeasured,
-        waitingForInitialMeasurements: state.waitingForInitialMeasurements,
-    }),
+        return {
+            // Core counts
+            componentCount: state.components.length,
+            dataSourceCount: state.dataSources.length,
+            pageCount: state.layoutPlan?.pages.length ?? 0,
+            
+            // Measurement status - using selectors
+            measurementStatus: state.measurementStatus ?? 'unknown',
+            measurementCount: state.measurements.size,
+            requiredMeasurementCount: stats.required,
+            missingMeasurementCount: stats.missing,
+            
+            // Layout status
+            isLayoutDirty: state.isLayoutDirty,
+            hasPendingLayout: state.pendingLayout !== null,
+            bucketCount: state.buckets.size,
+            
+            // Flags - using selector
+            allComponentsMeasured: stats.complete,
+            waitingForInitialMeasurements: state.waitingForInitialMeasurements,
+        };
+    },
     
     warnings: () => {
         const warnings: StateWarning[] = [];
@@ -94,14 +107,15 @@ export const createStateDebugger = (state: CanvasLayoutState): StateDebugger => 
             });
         }
         
-        // Check for missing measurements when should be complete
-        if (state.measurementStatus === 'complete' && state.missingMeasurementKeys.size > 0) {
+        // Check for missing measurements when should be complete (using selectors)
+        const missingKeys = selectMissingMeasurementKeys(state);
+        if (state.measurementStatus === 'complete' && missingKeys.size > 0) {
             warnings.push({
                 level: 'error',
                 message: 'Status is complete but measurements are missing',
                 details: {
-                    missingCount: state.missingMeasurementKeys.size,
-                    sampleMissing: Array.from(state.missingMeasurementKeys).slice(0, 5),
+                    missingCount: missingKeys.size,
+                    sampleMissing: Array.from(missingKeys).slice(0, 5),
                 },
             });
         }
