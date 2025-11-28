@@ -598,23 +598,46 @@ interface SplitDecision {
     willOverflow: boolean;          // Will placed segment exceed region boundary?
     reason: string;                 // Why this decision was made
     metadataOnly?: boolean;         // True when placing intro metadata without items
+    preferMove?: boolean;           // Suggest moving whole component is better than splitting
 }
+
+/**
+ * Configuration for smarter split decisions (Phase 4 A2)
+ */
+interface SmartSplitConfig {
+    /** Minimum items to justify a split. Below this, prefer moving whole component. Default: 2 */
+    minItemsForSplit: number;
+    /** If whole list fits in next region and only this many items would split, prefer move. Default: 2 */
+    preferMoveThreshold: number;
+    /** Available space in next region (if known). Used to decide split vs move. */
+    nextRegionCapacity?: number;
+}
+
+const DEFAULT_SMART_SPLIT_CONFIG: SmartSplitConfig = {
+    minItemsForSplit: 2,
+    preferMoveThreshold: 2,
+};
 
 /**
  * Find best split point for list component using measurement-based evaluation.
  * 
- * Algorithm:
- * 1. Try splits from largest to smallest (greedy: maximize items in current region)
- * 2. For each split option, MEASURE where it would be placed
- * 3. Check constraints:
+ * Algorithm (Phase 4 A2 - Enhanced with cost-based decisions):
+ * 1. Calculate full component height
+ * 2. Check if moving whole component is better than splitting:
+ *    - If only 1-2 items would fit, AND whole list fits in next region → prefer move
+ * 3. Try splits from largest to smallest (greedy: maximize items in current region)
+ * 4. For each split option, MEASURE where it would be placed
+ * 5. Check constraints:
  *    - Top: Does it start in bottom 20%? (invalid except minimum-1-item rule)
  *    - Bottom: Does it exceed region boundary? (try fewer items)
- * 4. Return first split that satisfies constraints
+ * 6. Return first split that satisfies constraints
  * 
  * @param entry - Layout entry with regionContent
  * @param cursor - Current position in region
  * @param regionHeight - Total region height
  * @param measurements - Measurement map to look up actual heights
+ * @param adapters - Canvas adapters for height estimation
+ * @param smartSplitConfig - Configuration for smart split decisions (optional)
  * @returns Split decision with placement details
  */
 const findBestListSplit = (
@@ -622,8 +645,10 @@ const findBestListSplit = (
     cursor: RegionCursor,
     regionHeight: number,
     measurements: Map<MeasurementKey, MeasurementRecord>,
-    adapters: CanvasAdapters
+    adapters: CanvasAdapters,
+    smartSplitConfig?: Partial<SmartSplitConfig>
 ): SplitDecision => {
+    const config = { ...DEFAULT_SMART_SPLIT_CONFIG, ...smartSplitConfig };
     const items = entry.regionContent!.items;
     const BOTTOM_THRESHOLD = 1; // Cannot start in bottom 20%
     const currentOffset = cursor.currentOffset;
@@ -633,16 +658,64 @@ const findBestListSplit = (
         !entry.regionContent!.isContinuation;
     const minimumSplit = hasIntroMetadata ? 0 : 1;
 
-    // NEW: Spell-aware chunking - limit spell lists to 2 spells per segment
-    // This prevents large measurement error compounding and creates more balanced layouts
-    const isSpellList = entry.regionContent!.kind === 'spell-list';
-    const MAX_SPELLS_PER_CHUNK = 2;
-    const maxSplit = isSpellList
-        ? Math.min(items.length, MAX_SPELLS_PER_CHUNK)
-        : items.length;
+    // Phase 4 A2: With measurement perfection (Phase 1 & 2), we no longer need
+    // artificial chunk size limits. Let the split algorithm find the natural break point.
+    const maxSplit = items.length;
+
+    // Phase 4 A2: Smart split decision - check if moving is better than splitting
+    // Get full component height to check if it would fit in next region
+    const remainingSpaceInCurrent = regionHeight - currentOffset;
+    
+    if (config.nextRegionCapacity !== undefined && items.length > 1) {
+        // Calculate full list height
+        const fullRegionContent = toRegionContent(
+            entry.regionContent!.kind,
+            items,
+            entry.regionContent!.startIndex,
+            entry.regionContent!.totalCount,
+            entry.regionContent!.isContinuation,
+            entry.regionContent!.metadata
+        );
+        const fullMeasurementKey = computeMeasurementKey(entry.instance.id, fullRegionContent);
+        const fullMeasured = measurements.get(fullMeasurementKey);
+        const fullEstimated = adapters.heightEstimator.estimateListHeight(items, entry.regionContent!.isContinuation);
+        const fullHeight = fullMeasured?.height ?? fullEstimated;
+        
+        // Estimate how many items would fit in current region (rough estimate)
+        const avgItemHeight = fullHeight / items.length;
+        const itemsThatWouldFit = Math.floor(remainingSpaceInCurrent / avgItemHeight);
+        
+        // Check if moving whole list is better than splitting
+        const wholeListFitsInNextRegion = fullHeight <= config.nextRegionCapacity;
+        const tooFewItemsToJustifySplit = itemsThatWouldFit < config.preferMoveThreshold;
+        
+        if (wholeListFitsInNextRegion && tooFewItemsToJustifySplit && !hasIntroMetadata) {
+            paginationStats.splitDecisions++;
+            debugLog(entry.instance.id, '🚚', 'prefer-move-over-split', {
+                reason: 'Too few items to justify split - whole list fits in next region',
+                itemsThatWouldFit,
+                totalItems: items.length,
+                remainingSpaceInCurrent,
+                fullHeight,
+                nextRegionCapacity: config.nextRegionCapacity,
+                threshold: config.preferMoveThreshold,
+            });
+            
+            return {
+                canPlace: false,
+                placedItems: [],
+                remainingItems: items,
+                placedHeight: 0,
+                placedTop: currentOffset,
+                placedBottom: currentOffset,
+                willOverflow: false,
+                reason: `Prefer move: only ${itemsThatWouldFit} items would fit, whole list (${items.length}) fits in next region`,
+                preferMove: true,
+            };
+        }
+    }
 
     // Try splits from largest to smallest (greedy: maximize items in current region)
-    // For spell lists, this is capped at MAX_SPELLS_PER_CHUNK
     for (let splitAt = maxSplit; splitAt >= minimumSplit; splitAt--) {
         const firstSegment = items.slice(0, splitAt);
         const secondSegment = items.slice(splitAt);
@@ -2312,141 +2385,9 @@ export const paginate = ({
                     },
                 });
 
-                // NEW: Proactive spell-list chunking - split even if it fits
-                // Force spell lists to split into MAX_SPELLS_PER_CHUNK (2) segments
-                // This ensures consistent chunking regardless of available space
-                const MAX_SPELLS_PER_CHUNK = 2;
-                const isSpellList = entry.regionContent?.kind === 'spell-list';
-                const exceedsMaxChunk = isSpellList &&
-                    entry.regionContent &&
-                    entry.regionContent.items.length > MAX_SPELLS_PER_CHUNK;
-
-                if (fits && exceedsMaxChunk) {
-                    // Even though it fits, force a split for spell lists exceeding max chunk size
-                    debugLog(entry.instance.id, '✂️', 'proactive-spell-split', {
-                        runId,
-                        regionKey: key,
-                        itemCount: entry.regionContent!.items.length,
-                        maxChunkSize: MAX_SPELLS_PER_CHUNK,
-                        reason: 'Spell list exceeds max chunk size, splitting even though it fits',
-                    });
-
-                    // Call the split function to get the proper 2-item split
-                    const forcedSplitDecision = findBestListSplit(entry, cursor, regionHeightPx, measurements, adapters);
-
-                    if (forcedSplitDecision.canPlace && forcedSplitDecision.placedItems.length > 0) {
-                        // Place the first 2 spells
-                        const splitRegionContent = toRegionContent(
-                            entry.regionContent!.kind,
-                            forcedSplitDecision.placedItems,
-                            entry.regionContent!.startIndex,
-                            entry.regionContent!.totalCount,
-                            entry.regionContent!.isContinuation,
-                            entry.regionContent!.metadata
-                        );
-
-                        const splitEntry: CanvasLayoutEntry = {
-                            ...entry,
-                            regionContent: splitRegionContent,
-                            measurementKey: computeMeasurementKey(entry.instance.id, splitRegionContent),
-                        };
-
-                        // Update span for the split segment
-                        const splitHeight = forcedSplitDecision.placedHeight;
-                        const splitSpan: RegionSpan = {
-                            top: cursor.currentOffset,
-                            bottom: cursor.currentOffset + splitHeight,
-                            height: splitHeight,
-                        };
-
-                        // Commit the split entry
-                        const committedSplitEntry: CanvasLayoutEntry = {
-                            ...splitEntry,
-                            region: {
-                                page: page.pageNumber,
-                                column: column.columnNumber,
-                                index: columnEntries.length,
-                            },
-                            span: splitSpan,
-                            overflow: false,
-                            listContinuation: {
-                                isContinuation: splitRegionContent.isContinuation,
-                                startIndex: splitRegionContent.startIndex,
-                                totalCount: splitRegionContent.totalCount,
-                            },
-                            sourceRegionKey: column.key,
-                        };
-
-                        columnEntries.push(committedSplitEntry);
-                        advanceCursor(cursor, splitSpan);
-
-                        debugLog(entry.instance.id, '📦', 'placed segment', {
-                            runId,
-                            regionKey: key,
-                            measurementKey: committedSplitEntry.measurementKey,
-                            span: splitSpan,
-                            cursorOffset: cursor.currentOffset,
-                            remainingItems: forcedSplitDecision.remainingItems.length,
-                            overflow: false,
-                            overflowRouted: false,
-                            clearedOverflow: false,
-                        });
-
-                        // Queue the continuation for the next region
-                        if (forcedSplitDecision.remainingItems.length > 0) {
-                            let nextRegion = findNextRegion(pages, key);
-
-                            // Create new page if no next region exists (same as overflow path)
-                            if (!nextRegion) {
-                                const newPageNumber = pages.length + 1;
-                                ensurePage(pages, newPageNumber, columnCount, pendingQueues, runId, 'proactive-split-no-next-region');
-                                nextRegion = findNextRegion(pages, key);
-                            }
-
-                            if (nextRegion) {
-                                const continuationContent = toRegionContent(
-                                    entry.regionContent!.kind,
-                                    forcedSplitDecision.remainingItems,
-                                    entry.regionContent!.startIndex + forcedSplitDecision.placedItems.length,
-                                    entry.regionContent!.totalCount,
-                                    true, // isContinuation
-                                    undefined // no metadata for continuations
-                                );
-
-                                const continuationEntry: CanvasLayoutEntry = {
-                                    ...entry,
-                                    regionContent: continuationContent,
-                                    measurementKey: computeMeasurementKey(entry.instance.id, continuationContent),
-                                    overflow: false,
-                                };
-
-                                const targetPendingQueue = getPendingQueue(nextRegion.key);
-                                targetPendingQueue.push(continuationEntry);
-
-                                debugLog(entry.instance.id, '📬', 'queued continuation segment', {
-                                    runId,
-                                    fromRegion: key,
-                                    toRegion: nextRegion.key,
-                                    remainingCount: forcedSplitDecision.remainingItems.length,
-                                    estimatedHeight: forcedSplitDecision.remainingItems.length * 70, // rough estimate
-                                    overflow: false,
-                                    overflowRouted: true,
-                                });
-                            } else {
-                                // Log if we still can't find a next region after page creation
-                                debugLog(entry.instance.id, '⚠️', 'proactive-split-no-next-region-after-creation', {
-                                    runId,
-                                    regionKey: key,
-                                    remainingCount: forcedSplitDecision.remainingItems.length,
-                                    pagesCount: pages.length,
-                                });
-                            }
-                        }
-
-                        // Continue to next entry in queue
-                        continue;
-                    }
-                }
+                // Phase 4 A2: Removed "proactive spell-list chunking" workaround
+                // With measurement perfection (Phase 1 & 2), we no longer need to force
+                // artificial splits. Components that fit should be placed as-is.
 
                 if (fits) {
                     // Filter out zero-height entries before committing (fits path)
@@ -2654,11 +2595,18 @@ export const paginate = ({
                 let shouldAvoidSplit = startsInBottomFifth; // Default: simple threshold for blocks
                 let splitDecision: SplitDecision | null = null;
 
+                // Phase 4 A2: Find next region FIRST so we can use its capacity for smart split decisions
+                const nextRegion = findNextRegion(pages, key);
+                // Assume next region is empty (full capacity available) - reasonable approximation
+                const nextRegionCapacity = nextRegion ? regionHeightPx : undefined;
+
                 debugLog(entry.instance.id, '🪓', 'evaluating split', {
                     runId,
                     items: entry.regionContent?.items?.length ?? 0,
                     cursorOffset: cursor.currentOffset,
                     regionHeightPx,
+                    nextRegionKey: nextRegion?.key ?? null,
+                    nextRegionCapacity,
                 });
 
                 // For list components with multiple items, use measurement-based evaluation
@@ -2670,15 +2618,33 @@ export const paginate = ({
                             entry.regionContent.startIndex === 0 &&
                             !entry.regionContent.isContinuation))
                 ) {
-                    splitDecision = findBestListSplit(entry, cursor, regionHeightPx, measurements, adapters);
+                    // Phase 4 A2: Pass nextRegionCapacity for smarter split vs move decisions
+                    splitDecision = findBestListSplit(
+                        entry, 
+                        cursor, 
+                        regionHeightPx, 
+                        measurements, 
+                        adapters,
+                        { nextRegionCapacity }
+                    );
 
                     // If split evaluation says we can't place, treat like shouldAvoidSplit
                     if (!splitDecision.canPlace) {
                         shouldAvoidSplit = true;
                     }
+                    
+                    // Phase 4 A2: Log when smart split prefers moving
+                    if (splitDecision.preferMove) {
+                        debugLog(entry.instance.id, '🚚', 'smart-split-prefers-move', {
+                            runId,
+                            regionKey: key,
+                            reason: splitDecision.reason,
+                            nextRegionKey: nextRegion?.key ?? null,
+                        });
+                    }
                 }
 
-                const nextRegion = findNextRegion(pages, key);
+                // nextRegion already computed above for smart split decisions
                 if (debugQueueEntry) {
                     // FIX: Log next-region-snapshot with context that this is informational,
                     // not indicating where the current component was placed
