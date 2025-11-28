@@ -716,11 +716,28 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 })
                 : new Map();
 
+            // ISSUE #001 FIX: Clear measurements when components change
+            // Measurement keys don't include content hash, so different data
+            // with same structure would reuse stale measurements causing overflow.
+            if (process.env.NODE_ENV !== 'production') {
+                // eslint-disable-next-line no-console
+                console.log('🔄 [SET_COMPONENTS] Clearing measurement cache for new data', {
+                    previousMeasurements: state.measurements.size,
+                    newComponentCount: action.payload.instances.length,
+                });
+            }
+
             return recomputeEntries({
                 ...state,
                 components: action.payload.instances,
                 homeRegions,
-                isLayoutDirty: true
+                isLayoutDirty: true,
+                // Clear all measurement state to force re-measurement
+                measurements: new Map(),
+                measurementVersion: 0,
+                lastMeasurementCompleteVersion: 0,
+                columnMeasurementCache: new Map(),
+                measurementStatus: 'idle' as import('./types').MeasurementStatus,
             });
         }
         case 'SET_TEMPLATE': {
@@ -743,10 +760,32 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 isLayoutDirty: true
             });
         }
-        case 'SET_DATA_SOURCES':
+        case 'SET_DATA_SOURCES': {
             logLayoutDirty('SET_DATA_SOURCES', { count: action.payload.dataSources.length });
             logIsLayoutDirtySet('SET_DATA_SOURCES', { count: action.payload.dataSources.length });
-            return recomputeEntries({ ...state, dataSources: action.payload.dataSources, isLayoutDirty: true });
+
+            // ISSUE #001 FIX: Clear measurements when data sources change
+            // Data changes affect rendered heights but may not change measurement keys
+            if (process.env.NODE_ENV !== 'production') {
+                // eslint-disable-next-line no-console
+                console.log('🔄 [SET_DATA_SOURCES] Clearing measurement cache for new data', {
+                    previousMeasurements: state.measurements.size,
+                    newDataSourceCount: action.payload.dataSources.length,
+                });
+            }
+
+            return recomputeEntries({
+                ...state,
+                dataSources: action.payload.dataSources,
+                isLayoutDirty: true,
+                // Clear all measurement state to force re-measurement
+                measurements: new Map(),
+                measurementVersion: 0,
+                lastMeasurementCompleteVersion: 0,
+                columnMeasurementCache: new Map(),
+                measurementStatus: 'idle' as import('./types').MeasurementStatus,
+            });
+        }
         case 'SET_REGISTRY':
             return { ...state, componentRegistry: action.payload.registry };
         case 'SET_PAGE_VARIABLES':
