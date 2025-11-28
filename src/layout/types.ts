@@ -181,11 +181,6 @@ export interface CanvasLayoutState {
 
     // Column-based measurement caching for pagination optimization
     columnMeasurementCache: Map<string, ColumnMeasurementState>;
-    measurementStabilityThreshold: number; // ms (default: 300ms)
-    
-    // Region height stability tracking for pagination optimization
-    regionHeightLastUpdateTime: number; // Timestamp of last region height update
-    regionHeightStabilityThreshold: number; // ms (default: 300ms)
 
     // Overall measurement lifecycle status for publish-once flow
     measurementStatus?: MeasurementStatus;

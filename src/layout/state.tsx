@@ -186,9 +186,8 @@ const CanvasLayoutDispatchContext = createContext<React.Dispatch<CanvasLayoutAct
 
 const initialPlan: LayoutPlan = { pages: [], overflowWarnings: [] };
 
+// Column measurement stability threshold (used by column cache)
 const MEASUREMENT_STABILITY_THRESHOLD_MS = 300; // Default: 300ms
-const REGION_HEIGHT_STABILITY_THRESHOLD_MS = 300; // Default: 300ms
-const REGION_HEIGHT_SIGNIFICANT_CHANGE_PX = 50; // Trigger immediately if change > 50px
 
 const parseBooleanFlag = (value?: string | null): boolean | undefined => {
     if (typeof value !== 'string') {
@@ -277,9 +276,6 @@ export const createInitialState = (): CanvasLayoutState => {
         adapters: createDefaultAdapters(),
         segmentRerouteCache: new SegmentRerouteCache(),
         columnMeasurementCache: new Map(),
-        measurementStabilityThreshold: MEASUREMENT_STABILITY_THRESHOLD_MS,
-        regionHeightLastUpdateTime: 0,
-        regionHeightStabilityThreshold: REGION_HEIGHT_STABILITY_THRESHOLD_MS,
         measurementStatus: 'idle' as import('./types').MeasurementStatus,
     };
 };
@@ -770,6 +766,8 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 isLayoutDirty: true,
             });
         case 'SET_REGION_HEIGHT': {
+            // Phase 3 simplification: With measurement perfection (Phase 1), we don't need
+            // timing-based stability checks. Region height is calculated correctly from the start.
             const incomingHeight = action.payload.regionHeightPx;
             if (incomingHeight <= 0 || Number.isNaN(incomingHeight)) {
                 logRegionHeightEvent('set-region-height-invalid', {
@@ -783,46 +781,28 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 state.regionHeightPx <= 0 ? incomingHeight : Math.min(state.regionHeightPx, incomingHeight);
             const heightDiff = Math.abs(state.regionHeightPx - nextHeight);
 
+            // Skip if change is sub-pixel (< 1px)
             if (heightDiff < 1) {
                 logRegionHeightEvent('set-region-height-skipped', {
                     previousHeight: state.regionHeightPx,
                     incomingHeight,
                     heightDiff,
                 });
-                if (process.env.NODE_ENV !== 'production' && incomingHeight < state.regionHeightPx) {
-                    // eslint-disable-next-line no-console
-                    console.log('[CanvasLayout] Region height ignored (diff too small)', {
-                        previousHeight: state.regionHeightPx,
-                        incomingHeight,
-                    });
-                }
                 return state;
             }
 
-            const now = Date.now();
-            const timeSinceLastUpdate = state.regionHeightLastUpdateTime > 0
-                ? now - state.regionHeightLastUpdateTime
-                : Infinity;
-            const isSignificantChange = heightDiff >= REGION_HEIGHT_SIGNIFICANT_CHANGE_PX;
-            const isStable = timeSinceLastUpdate >= state.regionHeightStabilityThreshold;
-            const isInitialHeight = state.regionHeightPx <= 0;
-
-            // Trigger pagination if:
-            // 1. This is the initial height (first measurement), OR
-            // 2. Height changed significantly (>50px), OR
-            // 3. Height has been stable for threshold (300ms)
-            const shouldTriggerPagination = isInitialHeight || isSignificantChange || isStable;
+            // Trigger pagination immediately when height changes significantly
+            // (No longer waiting for timing-based stability)
+            const shouldTriggerPagination = heightDiff >= 1;
 
             logLayoutDirty('SET_REGION_HEIGHT', {
                 oldHeight: state.regionHeightPx,
                 newHeight: nextHeight,
                 incomingHeight,
                 diff: heightDiff,
-                timeSinceLastUpdate,
-                isStable,
-                isSignificantChange,
                 shouldTriggerPagination,
             });
+            
             if (process.env.NODE_ENV !== 'production') {
                 // eslint-disable-next-line no-console
                 console.log('[CanvasLayout] Region height updated', {
@@ -830,18 +810,10 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                     incomingHeight,
                     nextHeight,
                     diff: Number(heightDiff.toFixed(2)),
-                    timeSinceLastUpdate: Number(timeSinceLastUpdate.toFixed(0)),
-                    isStable,
-                    isSignificantChange,
-                    shouldTriggerPagination,
-                    reason: isInitialHeight ? 'initial-height'
-                        : isSignificantChange ? 'significant-change'
-                            : isStable ? 'stable'
-                                : 'waiting-for-stability',
                 });
             }
-            // CRITICAL: Don't trigger pagination if there's already a pending layout
-            // Wait for current pagination to complete before triggering again
+            
+            // Don't trigger pagination if there's already a pending layout
             const canTriggerPagination = shouldTriggerPagination && !state.pendingLayout;
 
             logRegionHeightEvent('set-region-height-applied', {
@@ -849,9 +821,6 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 nextHeight,
                 incomingHeight,
                 heightDiff,
-                timeSinceLastUpdate,
-                isStable,
-                isSignificantChange,
                 shouldTriggerPagination,
                 canTriggerPagination,
                 pendingLayoutExists: Boolean(state.pendingLayout),
@@ -861,9 +830,6 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 logIsLayoutDirtySet('SET_REGION_HEIGHT', {
                     previousHeight: state.regionHeightPx,
                     nextHeight,
-                    reason: isInitialHeight ? 'initial-height'
-                        : isSignificantChange ? 'significant-change'
-                            : 'stable',
                     pendingLayoutExists: Boolean(state.pendingLayout),
                     willTrigger: canTriggerPagination,
                 });
@@ -871,7 +837,6 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             return {
                 ...state,
                 regionHeightPx: nextHeight,
-                regionHeightLastUpdateTime: now,
                 isLayoutDirty: canTriggerPagination,
             };
         }
@@ -938,7 +903,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
             const readyColumns = columnCacheEnabled
                 ? getReadyColumns(
                     updatedCache,
-                    state.measurementStabilityThreshold,
+                    MEASUREMENT_STABILITY_THRESHOLD_MS,
                     measurements
                 )
                 : new Set<string>();
@@ -1027,7 +992,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 const readyColumnsAfterRebuild = (updatedState.measurementStatus === 'complete' && columnCacheEnabled)
                     ? getReadyColumns(
                         recomputed.columnMeasurementCache,
-                        recomputed.measurementStabilityThreshold,
+                        MEASUREMENT_STABILITY_THRESHOLD_MS,
                         measurements
                     )
                     : new Set<string>();
