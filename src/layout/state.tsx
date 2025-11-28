@@ -1234,6 +1234,19 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 regionHeightPx: nextRegionHeightPx,
                 lastMeasurementCompleteVersion: version,
             };
+
+            // DIAGNOSTIC: Log state before recomputeEntries
+            if (process.env.NODE_ENV !== 'production') {
+                // eslint-disable-next-line no-console
+                console.log('🔬 [Layout] MEASUREMENT_COMPLETE: State before recompute', {
+                    componentCount: state.components.length,
+                    dataSourceCount: state.dataSources.length,
+                    measurementCount: state.measurements.size,
+                    hasTemplate: !!state.template,
+                    componentIds: state.components.slice(0, 5).map(c => c.id),
+                });
+            }
+
             // Rebuild entries to ensure buckets are populated
             const recomputed = recomputeEntries({
                 ...updatedState,

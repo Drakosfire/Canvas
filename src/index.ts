@@ -37,10 +37,33 @@ export {
 
 // Layout System
 export { CanvasPage } from './components/CanvasPage';
+export type { CanvasPageProps } from './components/CanvasPage';
 export { useCanvasLayout } from './hooks/useCanvasLayout';
 export { CanvasLayoutProvider } from './layout/state';
 export { MeasurementLayer, MeasurementCoordinator } from './layout/measurement';
 export type { MeasurementLayerProps } from './layout/measurement';
+
+// Structural Styles (Phase 1: Measurement Perfection)
+export {
+    createColumnStructuralStyles,
+    createPageStructuralStyles,
+    createColumnWrapperStructuralStyles,
+    createMeasurementEntryStyles,
+    createMeasurementLayerStyles,
+    widthsMatch,
+    assertWidthsMatch,
+} from './layout/structuralStyles';
+export type {
+    ColumnStructuralStyles,
+    PageStructuralStyles,
+    ColumnWrapperStructuralStyles,
+    MeasurementEntryStructuralStyles,
+    MeasurementStagingMode,
+} from './layout/structuralStyles';
+
+// Diagnostics (Development)
+export { compareLayers, getAllColumnWidths, verifyComponent, checkOverflow } from './layout/diagnostics';
+export type { LayerComparison, ColumnInfo, MeasurementDiagnostic, CanvasDebugAPI } from './layout/diagnostics';
 
 // Layout Utilities
 export {

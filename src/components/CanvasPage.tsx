@@ -2,13 +2,21 @@ import React, { useEffect } from 'react';
 
 import type { CanvasLayoutEntry, LayoutPlan } from '../layout/types';
 import { isDebugEnabled } from '../layout/debugFlags';
+import { createColumnStructuralStyles } from '../layout/structuralStyles';
 
-interface CanvasPageProps {
+export interface CanvasPageProps {
     layoutPlan: LayoutPlan | null | undefined;
     renderEntry: (entry: CanvasLayoutEntry) => React.ReactNode;
+    /** 
+     * Column width in pixels for structural styles.
+     * When provided, columns use inline structural styles to guarantee
+     * measurement layer width === visible layer width.
+     * Phase 1: Measurement Perfection
+     */
+    columnWidthPx?: number;
 }
 
-const CanvasPage: React.FC<CanvasPageProps> = ({ layoutPlan, renderEntry }) => {
+const CanvasPage: React.FC<CanvasPageProps> = ({ layoutPlan, renderEntry, columnWidthPx }) => {
     // Debug: Log plan details when rendering (gated behind plan-commit flag)
     useEffect(() => {
         if (layoutPlan && layoutPlan.pages.length > 0 && isDebugEnabled('plan-commit')) {
@@ -86,7 +94,13 @@ const CanvasPage: React.FC<CanvasPageProps> = ({ layoutPlan, renderEntry }) => {
                     <div className="columnWrapper">
                         <div className="monster frame wide" data-page-columns={page.columns.length}>
                             {page.columns.map((column) => (
-                                <div key={column.key} className="canvas-column" data-column-key={column.key} data-column-number={column.columnNumber}>
+                                <div 
+                                    key={column.key} 
+                                    className="canvas-column" 
+                                    data-column-key={column.key} 
+                                    data-column-number={column.columnNumber}
+                                    style={columnWidthPx != null ? createColumnStructuralStyles(columnWidthPx) : undefined}
+                                >
                                     {column.entries.map((entry, index) => (
                                         <div
                                             key={`${entry.instance.id}:${entry.region?.page ?? page.pageNumber}:${entry.region?.index ?? index}`}

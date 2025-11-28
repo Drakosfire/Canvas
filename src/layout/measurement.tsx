@@ -4,6 +4,7 @@ import type { MeasurementEntry, MeasurementRecord } from './types';
 import { MEASUREMENT_THROTTLE_MS, regionKey } from './utils';
 import { isDebugEnabled } from './debugFlags';
 import { isComponentDebugEnabled, normalizeComponentId } from './paginate';
+import { createMeasurementLayerStyles, createMeasurementEntryStyles } from './structuralStyles';
 
 /**
  * Measurement semantics
@@ -425,6 +426,9 @@ export class MeasurementCoordinator {
  * Encapsulates DOM observation for a single measurement entry.
  * Manages ResizeObserver, requestAnimationFrame, and image load listeners.
  */
+// Track measurement history to detect inconsistencies
+const measurementHistoryTracker = new Map<string, { firstHeight: number; measureCount: number }>();
+
 class MeasurementObserver {
     private observer: ResizeObserver | null = null;
     private rafHandle: number | null = null;
@@ -440,6 +444,34 @@ class MeasurementObserver {
         private node: HTMLDivElement,
         private onMeasure: (key: string, height: number) => void
     ) { }
+
+    // Track measurement consistency
+    private trackMeasurementConsistency(height: number): void {
+        const existing = measurementHistoryTracker.get(this.key);
+        const componentId = extractComponentId(this.key);
+        const isDebugComponent = componentId ? isComponentDebugEnabled(componentId) : false;
+
+        if (!existing) {
+            measurementHistoryTracker.set(this.key, { firstHeight: height, measureCount: 1 });
+            return;
+        }
+
+        existing.measureCount++;
+        const diff = Math.abs(height - existing.firstHeight);
+
+        // Alert if measurement differs by more than 5px from first measurement
+        if (diff > 5 && shouldLogMeasurements() && isDebugComponent) {
+            console.warn('⚠️ [Measurement] HEIGHT INCONSISTENCY DETECTED:', {
+                key: this.key,
+                componentId,
+                firstHeight: existing.firstHeight.toFixed(2),
+                currentHeight: height.toFixed(2),
+                difference: diff.toFixed(2),
+                measureCount: existing.measureCount,
+                likelyCause: diff > 30 ? 'HEADING_MISSING' : 'MINOR_REFLOW',
+            });
+        }
+    }
 
     /**
      * Lock this observer - measurements will be stored but not dispatched
@@ -507,37 +539,61 @@ class MeasurementObserver {
 
     private measure = (): void => {
         const rect = this.node.getBoundingClientRect();
-        let height = rect.height > 0 ? rect.height : 0;
-
-        const computed = typeof window !== 'undefined' ? window.getComputedStyle(this.node) : null;
 
         // Extract component ID once for all debug checks
         const componentId = extractComponentId(this.key);
         const isDebugComponent = componentId ? isComponentDebugEnabled(componentId) : false;
 
-        // DIAGNOSTIC: Log CSS context for component-11 to debug measurement discrepancies
-        if (shouldLogMeasurements() && isDebugComponent && componentId === 'component-11') {
-            const firstChild = this.node.children[0] as HTMLElement | undefined;
-            const firstChildStyle = firstChild ? window.getComputedStyle(firstChild) : null;
+        // WIDTH GATE: Skip measurement if actual width doesn't match expected (CSS not applied yet)
+        // The entry has inline style width set; check if rendered width matches
+        const expectedWidth = this.node.style.width ? parseFloat(this.node.style.width) : null;
+        if (expectedWidth != null && rect.width > 0) {
+            const widthDiff = Math.abs(rect.width - expectedWidth);
+            // Allow 5px tolerance for subpixel rendering
+            if (widthDiff > 5) {
+                if (shouldLogMeasurements() && isDebugComponent) {
+                    console.log('⏳ [MeasurementObserver] Skipping measurement - width not stable:', {
+                        key: this.key,
+                        expectedWidth: expectedWidth.toFixed(2),
+                        actualWidth: rect.width.toFixed(2),
+                        widthDiff: widthDiff.toFixed(2),
+                    });
+                }
+                // Schedule retry via RAF
+                if (this.rafHandle === null) {
+                    this.rafHandle = requestAnimationFrame(() => {
+                        this.rafHandle = null;
+                        this.measure();
+                    });
+                }
+                return;
+            }
+        }
 
-            console.log('[MeasurementObserver] 🔬 CSS DIAGNOSTIC (component-11):', {
+        let height = rect.height > 0 ? rect.height : 0;
+
+        const computed = typeof window !== 'undefined' ? window.getComputedStyle(this.node) : null;
+
+        // DIAGNOSTIC: Log DOM structure for debug components to track heading presence
+        if (shouldLogMeasurements() && isDebugComponent) {
+            const section = this.node.querySelector('section');
+            const heading = this.node.querySelector('h4, h3, .dm-section-heading');
+            const headingRect = heading?.getBoundingClientRect();
+            const sectionRect = section?.getBoundingClientRect();
+
+            console.log('[MeasurementObserver] 🔬 DOM STRUCTURE:', {
                 key: this.key,
+                componentId,
                 wrapperHeight: height.toFixed(2),
-                wrapperCSS: {
-                    fontSize: computed?.fontSize,
-                    lineHeight: computed?.lineHeight,
-                    fontFamily: computed?.fontFamily?.substring(0, 30),
-                    display: computed?.display,
-                    boxSizing: computed?.boxSizing,
-                },
-                firstChildCSS: firstChild ? {
-                    tagName: firstChild.tagName,
-                    className: firstChild.className,
-                    fontSize: firstChildStyle?.fontSize,
-                    lineHeight: firstChildStyle?.lineHeight,
-                    padding: `${firstChildStyle?.paddingTop} ${firstChildStyle?.paddingBottom}`,
-                    height: firstChild.getBoundingClientRect().height.toFixed(2),
-                } : 'No children',
+                hasSection: !!section,
+                sectionHeight: sectionRect?.height?.toFixed(2) ?? 'N/A',
+                hasHeading: !!heading,
+                headingTag: heading?.tagName ?? 'none',
+                headingText: heading?.textContent?.substring(0, 20) ?? 'none',
+                headingHeight: headingRect?.height?.toFixed(2) ?? 'N/A',
+                childCount: this.node.children.length,
+                firstChildTag: (this.node.children[0] as HTMLElement)?.tagName ?? 'none',
+                fontFamily: computed?.fontFamily?.substring(0, 25),
             });
         }
 
@@ -679,6 +735,9 @@ class MeasurementObserver {
                 },
             });
         }
+
+        // Track measurement consistency before dispatching
+        this.trackMeasurementConsistency(height);
 
         // Phase 1: Check lock state before dispatching
         if (this.isLocked) {
@@ -854,6 +913,9 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({
         // Reset for new cycle
         cumulativeRef.current.clear();
         publishedRef.current = false;
+        // Clear measurement history tracker so "first" measurement is from this cycle
+        // (not from early attach before CSS was applied)
+        measurementHistoryTracker.clear();
         // Note: measurementStatus will be set to 'measuring' by MEASUREMENTS_UPDATED action
         // when first measurements arrive, so we don't need to dispatch MEASUREMENT_START here
         if (shouldLogMeasurements()) {
@@ -933,13 +995,32 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({
             return;
         }
 
-        const completionVersion = checkAndSignalCompletion('publish-once');
-        if (completionVersion == null) {
+        // Check if all measurements are present (but don't signal completion yet)
+        const required = requiredKeysRef.current;
+        if (required.size === 0) {
+            return;
+        }
+        let allPresent = true;
+        required.forEach((key) => {
+            if (!cumulativeRef.current.has(key)) {
+                allPresent = false;
+            }
+        });
+        if (!allPresent) {
             return;
         }
 
-        // Publish one consolidated batch to reducer
+        // CRITICAL FIX: Publish measurements to state BEFORE signaling completion
+        // This ensures MEASUREMENT_COMPLETE handler has access to measurements
         onMeasurements(Array.from(cumulativeRef.current.values()));
+
+        // NOW signal completion (this fires MEASUREMENT_COMPLETE action)
+        const completionVersion = checkAndSignalCompletion('publish-once');
+        if (completionVersion == null) {
+            // Already published by another call, skip cleanup
+            return;
+        }
+
         // Immediately detach all observers to prevent post-publish churn
         try {
             observers.current.forEach((observer, key) => {
@@ -1011,28 +1092,32 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({
         observers.current.clear();
     }, [coordinator]);
 
-    const containerStyle: React.CSSProperties =
-        stagingMode === 'embedded'
-            ? {
-                position: 'relative',
-                width: measuredColumnWidth != null ? `${measuredColumnWidth}px` : '100%',
-                maxWidth: measuredColumnWidth != null ? `${measuredColumnWidth}px` : '100%',
-                visibility: 'hidden',
-                pointerEvents: 'none',
-                display: 'flex',
-                flexDirection: 'column',
-            }
-            : {
-                position: 'fixed',
-                left: '-100000px',
-                top: 0,
-                visibility: 'hidden',
-                pointerEvents: 'none',
-                display: 'flex',
-                flexDirection: 'column',
-                width: measuredColumnWidth != null ? `${measuredColumnWidth}px` : 'auto',
-                maxWidth: measuredColumnWidth != null ? `${measuredColumnWidth}px` : 'none',
-            };
+    // Use structural styles from the shared module to guarantee
+    // measurement layer width === visible layer width (Phase 1: Measurement Perfection)
+    const baseContainerStyle = createMeasurementLayerStyles(measuredColumnWidth ?? null, stagingMode);
+
+    // CRITICAL: Add gap to match visible layer's flex gap
+    // The visible layer gets `gap: var(--dm-column-gap, 12px)` from CSS
+    // Measurement must include same gap or heights won't account for spacing
+    const containerStyle: React.CSSProperties = {
+        ...baseContainerStyle,
+        gap: '12px', // Must match --dm-column-gap
+    };
+
+    // Entry styles are also centralized to ensure consistency
+    const entryStyles = measuredColumnWidth != null
+        ? createMeasurementEntryStyles(measuredColumnWidth)
+        : {
+            width: '100%',
+            maxWidth: '100%',
+            boxSizing: 'border-box' as const,
+            height: 'auto' as const,
+            minHeight: 0,
+            flexShrink: 0,
+            flexGrow: 0,
+            overflow: 'hidden' as const,
+            transform: 'none',
+        };
 
     return (
         <div className="dm-measurement-layer" style={containerStyle}>
@@ -1042,17 +1127,7 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({
                     ref={handleRef(entry)}
                     className="dm-measurement-entry"
                     data-measurement-key={entry.measurementKey}
-                    style={{
-                        width: measuredColumnWidth != null ? `${measuredColumnWidth}px` : '100%',
-                        maxWidth: measuredColumnWidth != null ? `${measuredColumnWidth}px` : '100%',
-                        boxSizing: 'border-box',
-                        height: 'auto',
-                        minHeight: 0,
-                        flexShrink: 0,
-                        flexGrow: 0,
-                        overflow: 'hidden',
-                        transform: 'none',
-                    }}
+                    style={entryStyles}
                 >
                     {renderComponent(entry)}
                 </div>
