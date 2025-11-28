@@ -31,6 +31,7 @@ import {
 import { isDebugEnabled } from './debugFlags';
 import { logRegionHeightEvent } from './regionHeightDebug';
 import { exposeStateDebugger } from './stateDebug';
+import { exposePaginationDiagnostics } from './paginationDiagnostics';
 
 const shouldLogPlanCommit = (): boolean => isDebugEnabled('plan-commit');
 
@@ -1489,9 +1490,10 @@ export const CanvasLayoutProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
     const value = useMemo(() => state, [state]);
 
-    // Expose state debugger in development (window.__CANVAS_STATE__)
+    // Expose debugging APIs in development
     useEffect(() => {
         exposeStateDebugger(state);
+        exposePaginationDiagnostics(); // window.__CANVAS_PAGINATION__
     }, [state]);
 
     return (

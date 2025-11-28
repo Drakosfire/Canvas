@@ -65,6 +65,20 @@ export type {
 export { createStateDebugger, exposeStateDebugger } from './layout/stateDebug';
 export type { StateSummary, StateWarning, StateDebugger } from './layout/stateDebug';
 
+// Pagination Diagnostics (Phase 4: Pagination Polish)
+export {
+    diagnosePagination,
+    quickCheck,
+    watchOverflow,
+    inspectComponent,
+    exposePaginationDiagnostics,
+} from './layout/paginationDiagnostics';
+export type {
+    ColumnOverflowReport,
+    PaginationDiagnosticReport,
+    PaginationDiagnosticsAPI,
+} from './layout/paginationDiagnostics';
+
 // Diagnostics (Development)
 export { compareLayers, getAllColumnWidths, verifyComponent, checkOverflow } from './layout/diagnostics';
 export type { LayerComparison, ColumnInfo, MeasurementDiagnostic, CanvasDebugAPI } from './layout/diagnostics';
