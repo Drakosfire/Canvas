@@ -61,6 +61,10 @@ export type {
     MeasurementStagingMode,
 } from './layout/structuralStyles';
 
+// State Debugging (Phase 3: State Simplification)
+export { createStateDebugger, exposeStateDebugger } from './layout/stateDebug';
+export type { StateSummary, StateWarning, StateDebugger } from './layout/stateDebug';
+
 // Diagnostics (Development)
 export { compareLayers, getAllColumnWidths, verifyComponent, checkOverflow } from './layout/diagnostics';
 export type { LayerComparison, ColumnInfo, MeasurementDiagnostic, CanvasDebugAPI } from './layout/diagnostics';

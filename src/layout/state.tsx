@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useMemo, useReducer } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer } from 'react';
 
 import type {
     ComponentDataSource,
@@ -30,6 +30,7 @@ import {
 } from './utils';
 import { isDebugEnabled } from './debugFlags';
 import { logRegionHeightEvent } from './regionHeightDebug';
+import { exposeStateDebugger } from './stateDebug';
 
 const shouldLogPlanCommit = (): boolean => isDebugEnabled('plan-commit');
 
@@ -802,7 +803,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                 diff: heightDiff,
                 shouldTriggerPagination,
             });
-            
+
             if (process.env.NODE_ENV !== 'production') {
                 // eslint-disable-next-line no-console
                 console.log('[CanvasLayout] Region height updated', {
@@ -812,7 +813,7 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
                     diff: Number(heightDiff.toFixed(2)),
                 });
             }
-            
+
             // Don't trigger pagination if there's already a pending layout
             const canTriggerPagination = shouldTriggerPagination && !state.pendingLayout;
 
@@ -1487,6 +1488,11 @@ export const CanvasLayoutProvider: React.FC<{ children: React.ReactNode }> = ({ 
     const [state, dispatch] = useReducer(layoutReducer, undefined, createInitialState);
 
     const value = useMemo(() => state, [state]);
+
+    // Expose state debugger in development (window.__CANVAS_STATE__)
+    useEffect(() => {
+        exposeStateDebugger(state);
+    }, [state]);
 
     return (
         <CanvasLayoutDispatchContext.Provider value={dispatch} >
