@@ -31,6 +31,7 @@ export const DEFAULT_PAGE_TOP_MARGIN_MM = 10;
 export const DEFAULT_PAGE_BOTTOM_MARGIN_MM = 10;
 export const COMPONENT_VERTICAL_SPACING_PX = 12; // Reduced from 18px for tighter layout
 export const LIST_ITEM_SPACING_PX = 8; // Reduced from 12px for tighter layout
+export const COLUMN_PADDING_PX = 8; // Matches CSS padding on .canvas-column
 export const DEFAULT_COMPONENT_HEIGHT_PX = 200;
 
 // Action-specific height constants removed - now provided by adapters

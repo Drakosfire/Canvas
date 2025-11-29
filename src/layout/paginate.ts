@@ -16,6 +16,7 @@ import { toRegionContent } from './utils-generic';
 import {
     COMPONENT_VERTICAL_SPACING_PX,
     LIST_ITEM_SPACING_PX,
+    COLUMN_PADDING_PX,
     computeMeasurementKey,
     regionKey,
     toColumnType,
@@ -412,6 +413,9 @@ const buildPlannerRegions = (
     const seen = new Set<string>();
     const configs: PlannerRegionConfig[] = [];
 
+    // Account for column padding: content area is reduced by top + bottom padding
+    const contentMaxHeightPx = regionHeightPx - (2 * COLUMN_PADDING_PX);
+
     sequence.forEach((region, index) => {
         if (seen.has(region.key)) {
             return;
@@ -419,8 +423,8 @@ const buildPlannerRegions = (
         seen.add(region.key);
         configs.push({
             key: region.key,
-            maxHeightPx: regionHeightPx,
-            cursorOffsetPx: 0,
+            maxHeightPx: contentMaxHeightPx,
+            cursorOffsetPx: COLUMN_PADDING_PX, // Start after top padding
         });
     });
 
@@ -517,9 +521,9 @@ const findOtherColumnOnSamePage = (pages: PageLayout[], currentKey: string): Reg
     return null; // Current region not found
 };
 
-const createCursor = (regionKey: string, maxHeight: number): RegionCursor => ({
+const createCursor = (regionKey: string, maxHeight: number, initialOffset: number = 0): RegionCursor => ({
     regionKey,
-    currentOffset: 0,
+    currentOffset: initialOffset,
     maxHeight,
 });
 
@@ -563,8 +567,9 @@ const fitsInRegion = (span: RegionSpan, cursor: RegionCursor, componentId?: stri
 };
 
 const advanceCursor = (cursor: RegionCursor, span: RegionSpan) => {
-    // CSS gap handles spacing between entries, so cursor tracks entry bottom directly
-    cursor.currentOffset = span.bottom;
+    // Add gap after entry to match CSS flex gap between entries
+    // This ensures pagination accounts for the 12px spacing CSS applies
+    cursor.currentOffset = span.bottom + COMPONENT_VERTICAL_SPACING_PX;
 };
 
 const detachFromSource = (entry: CanvasLayoutEntry, key: string, buckets: Map<string, CanvasLayoutEntry[]>) => {
@@ -665,7 +670,7 @@ const findBestListSplit = (
     // Phase 4 A2: Smart split decision - check if moving is better than splitting
     // Get full component height to check if it would fit in next region
     const remainingSpaceInCurrent = regionHeight - currentOffset;
-    
+
     if (config.nextRegionCapacity !== undefined && items.length > 1) {
         // Calculate full list height
         const fullRegionContent = toRegionContent(
@@ -680,15 +685,15 @@ const findBestListSplit = (
         const fullMeasured = measurements.get(fullMeasurementKey);
         const fullEstimated = adapters.heightEstimator.estimateListHeight(items, entry.regionContent!.isContinuation);
         const fullHeight = fullMeasured?.height ?? fullEstimated;
-        
+
         // Estimate how many items would fit in current region (rough estimate)
         const avgItemHeight = fullHeight / items.length;
         const itemsThatWouldFit = Math.floor(remainingSpaceInCurrent / avgItemHeight);
-        
+
         // Check if moving whole list is better than splitting
         const wholeListFitsInNextRegion = fullHeight <= config.nextRegionCapacity;
         const tooFewItemsToJustifySplit = itemsThatWouldFit < config.preferMoveThreshold;
-        
+
         if (wholeListFitsInNextRegion && tooFewItemsToJustifySplit && !hasIntroMetadata) {
             paginationStats.splitDecisions++;
             debugLog(entry.instance.id, '🚚', 'prefer-move-over-split', {
@@ -700,7 +705,7 @@ const findBestListSplit = (
                 nextRegionCapacity: config.nextRegionCapacity,
                 threshold: config.preferMoveThreshold,
             });
-            
+
             return {
                 canPlace: false,
                 placedItems: [],
@@ -1372,10 +1377,11 @@ export const paginate = ({
                     });
                 });
             }
-            // Use measured column height directly (no normalization needed)
-            // The regionHeightPx is ALREADY the measured column height from the DOM,
-            // which already accounts for any header space.
-            const cursor = createCursor(key, regionHeightPx);
+            // Use measured column height directly, but account for column padding
+            // The regionHeightPx is the measured column height from the DOM.
+            // We reduce by padding and start cursor after top padding.
+            const effectiveMaxHeight = regionHeightPx - (2 * COLUMN_PADDING_PX);
+            const cursor = createCursor(key, effectiveMaxHeight, COLUMN_PADDING_PX);
             let safetyCounter = 0;
 
             // Cursor debug: Log cursor creation
@@ -2620,10 +2626,10 @@ export const paginate = ({
                 ) {
                     // Phase 4 A2: Pass nextRegionCapacity for smarter split vs move decisions
                     splitDecision = findBestListSplit(
-                        entry, 
-                        cursor, 
-                        regionHeightPx, 
-                        measurements, 
+                        entry,
+                        cursor,
+                        regionHeightPx,
+                        measurements,
                         adapters,
                         { nextRegionCapacity }
                     );
@@ -2632,7 +2638,7 @@ export const paginate = ({
                     if (!splitDecision.canPlace) {
                         shouldAvoidSplit = true;
                     }
-                    
+
                     // Phase 4 A2: Log when smart split prefers moving
                     if (splitDecision.preferMove) {
                         debugLog(entry.instance.id, '🚚', 'smart-split-prefers-move', {

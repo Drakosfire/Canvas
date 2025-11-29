@@ -845,6 +845,13 @@ export interface MeasurementLayerProps {
     measuredColumnWidth?: number | null; // Explicit column width for accurate image scaling
     publishOnce?: boolean; // Spike: accumulate and publish single batch when complete
     stagingMode?: MeasurementStagingMode; // Render measurement DOM offscreen (default) or embedded
+    /**
+     * Phase 4 A2: Gate measurements until host confirms CSS/fonts are loaded.
+     * When `ready` is false, MeasurementLayer renders but does NOT start measuring.
+     * This prevents capturing incorrect heights before theme CSS is applied.
+     * Default: true (for backward compatibility)
+     */
+    ready?: boolean;
 }
 
 const readPublishOnceEnv = (): boolean => {
@@ -865,6 +872,7 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({
     measuredColumnWidth,
     publishOnce,
     stagingMode = 'fixed-offscreen',
+    ready = true, // Default to true for backward compatibility
 }) => {
     const effectivePublishOnce = typeof publishOnce === 'boolean' ? publishOnce : readPublishOnceEnv();
     const cumulativeRef = useRef(new Map<string, MeasurementRecord>());
@@ -872,11 +880,33 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({
     const measurementVersionRef = useRef(0); // Track measurement version for proper incrementing
     const previousEntriesSignatureRef = useRef<string | null>(null);
     const previousPublishModeRef = useRef<boolean>(effectivePublishOnce);
+    
+    // Phase 4 A2: Track ready state in ref so dispatcher callback can access current value
+    const readyRef = useRef(ready);
+    useEffect(() => {
+        readyRef.current = ready;
+    }, [ready]);
 
     const requiredKeysRef = useRef(new Set<string>());
     const measurementEntriesSignature = useMemo(() => buildMeasurementEntriesSignature(entries), [entries]);
 
     useEffect(() => {
+        // Phase 4 A2: Gate measurements until host confirms CSS/fonts are loaded
+        if (!ready) {
+            // Clear any accumulated measurements - we'll get fresh ones when ready
+            requiredKeysRef.current = new Set();
+            cumulativeRef.current.clear();
+            publishedRef.current = false;
+            previousEntriesSignatureRef.current = null; // Force re-init when ready becomes true
+            if (shouldLogMeasurements()) {
+                console.log('⏸️ [Measurement] waiting for ready signal (CSS/fonts not loaded)', {
+                    ready,
+                    entryCount: entries.length,
+                });
+            }
+            return;
+        }
+
         // Defer resets when there are no entries to measure yet (e.g., pre-refresh initialization)
         if (entries.length === 0) {
             requiredKeysRef.current = new Set();
@@ -922,9 +952,10 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({
             console.log('📐 [Measurement] start', {
                 requiredCount: required.size,
                 publishOnce: effectivePublishOnce,
+                ready,
             });
         }
-    }, [entries, measurementEntriesSignature, effectivePublishOnce]);
+    }, [entries, measurementEntriesSignature, effectivePublishOnce, ready]);
 
     const checkAndSignalCompletion = useCallback(
         (mode: 'incremental' | 'publish-once'): number | null => {
@@ -975,6 +1006,18 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({
     );
 
     const dispatcher = useIdleMeasurementDispatcher((updates) => {
+        // Phase 4 A2: Don't record measurements until CSS/fonts are ready
+        // This prevents capturing incorrect heights before theme CSS is applied
+        if (!readyRef.current) {
+            if (shouldLogMeasurements()) {
+                console.log('⏸️ [Measurement] ignoring measurements - not ready', {
+                    updateCount: updates.length,
+                    keys: updates.map(u => u.key).slice(0, 3), // First 3 keys for debugging
+                });
+            }
+            return;
+        }
+
         // Hard-stop: if we've already published (publish-once mode), ignore all further updates
         if (effectivePublishOnce && publishedRef.current) {
             return;
@@ -1120,7 +1163,7 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({
         };
 
     return (
-        <div className="dm-measurement-layer" style={containerStyle}>
+        <div className="dm-canvas-measurement-layer" style={containerStyle}>
             {entries.map((entry) => (
                 <div
                     key={entry.measurementKey}

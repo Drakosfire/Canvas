@@ -77,7 +77,7 @@ export interface CanvasDebugAPI {
  */
 export const compareLayers = (): LayerComparison => {
     const measurementColumn = document.querySelector(
-        '.dm-measurement-layer .dm-measurement-entry'
+        '.dm-canvas-measurement-layer .dm-measurement-entry'
     ) as HTMLElement | null;
 
     const visibleColumn = document.querySelector(
@@ -86,7 +86,7 @@ export const compareLayers = (): LayerComparison => {
 
     // Fallback: try alternative selectors
     const measurementAlt = document.querySelector(
-        '.dm-measurement-layer'
+        '.dm-canvas-measurement-layer'
     ) as HTMLElement | null;
 
     const measurementWidth = measurementColumn?.getBoundingClientRect().width
@@ -110,7 +110,7 @@ export const compareLayers = (): LayerComparison => {
             visibleLayerWidth: visibleWidth,
             difference: visibleWidth,
             status: 'MISMATCH',
-            recommendation: 'Measurement layer not found. Check .dm-measurement-layer selector.',
+            recommendation: 'Measurement layer not found. Check .dm-canvas-measurement-layer selector.',
         };
     }
 
