@@ -1,6 +1,6 @@
 {
   "name": "dungeonmind-canvas",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Flexible, template-driven rendering engine for multi-column, multi-page layouts",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
