@@ -42,6 +42,8 @@ export { useCanvasLayout } from './hooks/useCanvasLayout';
 export { CanvasLayoutProvider } from './layout/state';
 export { MeasurementLayer, MeasurementCoordinator } from './layout/measurement';
 export type { MeasurementLayerProps } from './layout/measurement';
+export { MeasurementPortal } from './layout/MeasurementPortal';
+export type { MeasurementPortalProps } from './layout/MeasurementPortal';
 
 // Structural Styles (Phase 1: Measurement Perfection)
 export {
@@ -97,6 +99,8 @@ export type { LayerComparison, ColumnInfo, MeasurementDiagnostic, CanvasDebugAPI
 export {
     COMPONENT_VERTICAL_SPACING_PX,
     computeBasePageDimensions,
+    computeCanvasDimensions,
+    createDefaultFrameConfig,
     buildBuckets,
     regionKey,
 } from './layout/utils';
@@ -133,6 +137,11 @@ export type {
     PaginationConfig,
     RegionListContent,
     CanvasComponentProps,
+    // Phase 5: Architectural Contracts
+    CanvasConfig,
+    FrameConfig,
+    CanvasDimensions,
+    CanvasDebugConfig,
 } from './types/canvas.types';
 
 // Adapter System

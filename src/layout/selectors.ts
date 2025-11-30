@@ -40,13 +40,13 @@ export const selectMissingMeasurementKeys = (
 ): Set<MeasurementKey> => {
     const required = requiredKeys ?? selectRequiredMeasurementKeys(state);
     const missing = new Set<MeasurementKey>();
-    
+
     Array.from(required).forEach(key => {
         if (!state.measurements.has(key)) {
             missing.add(key);
         }
     });
-    
+
     return missing;
 };
 
@@ -57,11 +57,11 @@ export const selectMissingMeasurementKeys = (
  */
 export const selectAllComponentsMeasured = (state: CanvasLayoutState): boolean => {
     const required = selectRequiredMeasurementKeys(state);
-    
+
     if (required.size === 0) {
         return false; // No components to measure
     }
-    
+
     // Check if all required keys have measurements
     return Array.from(required).every(key => state.measurements.has(key));
 };
@@ -81,7 +81,7 @@ export const selectMeasurementStats = (state: CanvasLayoutState): {
     const required = selectRequiredMeasurementKeys(state);
     const missing = selectMissingMeasurementKeys(state, required);
     const measured = required.size - missing.size;
-    
+
     return {
         required: required.size,
         measured,
@@ -112,7 +112,7 @@ export const verifySelectorsMatchState = (state: CanvasLayoutState): {
     issues: string[];
 } => {
     const issues: string[] = [];
-    
+
     // Compare required keys
     const selectorRequired = selectRequiredMeasurementKeys(state);
     const stateRequired = state.requiredMeasurementKeys;
@@ -121,7 +121,7 @@ export const verifySelectorsMatchState = (state: CanvasLayoutState): {
     if (!requiredKeysMatch) {
         issues.push(`requiredMeasurementKeys mismatch: selector=${selectorRequired.size}, state=${stateRequired.size}`);
     }
-    
+
     // Compare missing keys
     const selectorMissing = selectMissingMeasurementKeys(state);
     const stateMissing = state.missingMeasurementKeys;
@@ -130,7 +130,7 @@ export const verifySelectorsMatchState = (state: CanvasLayoutState): {
     if (!missingKeysMatch) {
         issues.push(`missingMeasurementKeys mismatch: selector=${selectorMissing.size}, state=${stateMissing.size}`);
     }
-    
+
     // Compare allComponentsMeasured
     const selectorAllMeasured = selectAllComponentsMeasured(state);
     const stateAllMeasured = state.allComponentsMeasured;
@@ -138,7 +138,7 @@ export const verifySelectorsMatchState = (state: CanvasLayoutState): {
     if (!allMeasuredMatch) {
         issues.push(`allComponentsMeasured mismatch: selector=${selectorAllMeasured}, state=${stateAllMeasured}`);
     }
-    
+
     return {
         requiredKeysMatch,
         missingKeysMatch,

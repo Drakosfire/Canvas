@@ -6,6 +6,9 @@ import type {
     ComponentDataSource,
     ComponentDataReference,
     PageVariables,
+    CanvasConfig,
+    CanvasDimensions,
+    FrameConfig,
 } from '../types/canvas.types';
 import type {
     CanvasEntriesResult,
@@ -80,6 +83,73 @@ export const computeBasePageDimensions = (
         bottomMarginPx,
     };
 };
+
+/**
+ * Compute all Canvas dimensions from a CanvasConfig.
+ * This is the single source of truth for all layout dimensions.
+ * 
+ * Consumer should NOT calculate these values - Canvas owns this calculation.
+ * 
+ * @param config - The CanvasConfig provided by the consumer
+ * @returns All calculated dimensions needed for layout and measurement
+ */
+export const computeCanvasDimensions = (config: CanvasConfig): CanvasDimensions => {
+    const { pageVariables, frameConfig } = config;
+
+    // Base page dimensions from pageVariables
+    const baseDims = computeBasePageDimensions(pageVariables);
+
+    // Margins
+    const leftMarginPx = convertToPixels(pageVariables.margins?.leftMm ?? 0, 'mm');
+    const rightMarginPx = convertToPixels(pageVariables.margins?.rightMm ?? 0, 'mm');
+
+    // Content width (page minus horizontal margins)
+    const contentWidthPx = baseDims.widthPx - leftMarginPx - rightMarginPx;
+
+    // Column calculations
+    const columnCount = pageVariables.pagination.columnCount;
+    const columnGapPx = convertToPixels(
+        pageVariables.columns.gutter,
+        pageVariables.columns.unit
+    );
+    const totalGaps = (columnCount - 1) * columnGapPx;
+    const columnWidthPx = Math.max(0, (contentWidthPx - totalGaps) / columnCount);
+
+    // Region height (content minus frame borders)
+    const frameBorderPx = frameConfig?.verticalBorderPx ?? 0;
+    const regionHeightPx = Math.max(0, baseDims.contentHeightPx - frameBorderPx);
+
+    // Entry width (column minus padding for measurement layer)
+    const columnPaddingPx = frameConfig?.columnPaddingPx ?? 0;
+    const entryWidthPx = Math.max(0, columnWidthPx - columnPaddingPx);
+
+    return {
+        pageWidthPx: baseDims.widthPx,
+        pageHeightPx: baseDims.heightPx,
+        contentWidthPx,
+        contentHeightPx: baseDims.contentHeightPx,
+        columnWidthPx,
+        columnGapPx,
+        regionHeightPx,
+        entryWidthPx,
+        leftMarginPx,
+        rightMarginPx,
+        topMarginPx: baseDims.topMarginPx,
+        bottomMarginPx: baseDims.bottomMarginPx,
+    };
+};
+
+/**
+ * Create default FrameConfig with zero values.
+ * Used when consumer doesn't provide frameConfig.
+ */
+export const createDefaultFrameConfig = (): FrameConfig => ({
+    verticalBorderPx: 0,
+    horizontalBorderPx: 0,
+    columnPaddingPx: 0,
+    columnVerticalPaddingPx: 0,
+    componentGapPx: COMPONENT_VERTICAL_SPACING_PX,
+});
 
 export const toColumnType = (column: number): 1 | 2 => (column <= 1 ? 1 : 2);
 

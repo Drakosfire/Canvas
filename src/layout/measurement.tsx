@@ -597,6 +597,52 @@ class MeasurementObserver {
             });
         }
 
+        // DIAGNOSTIC: Log font-size context for component-11 to debug measurement discrepancy
+        // This captures the CSS context that affects rem/em calculations
+        if (this.key.includes('component-11') && this.key.includes('lair-action-list:0:3:3:base')) {
+            const parent = this.node.parentElement;
+            const grandparent = parent?.parentElement;
+            const greatGrandparent = grandparent?.parentElement;
+
+            const entryFontSize = computed?.fontSize ?? 'N/A';
+            const parentFontSize = parent ? window.getComputedStyle(parent).fontSize : 'N/A';
+            const grandparentFontSize = grandparent ? window.getComputedStyle(grandparent).fontSize : 'N/A';
+            const greatGrandparentFontSize = greatGrandparent ? window.getComputedStyle(greatGrandparent).fontSize : 'N/A';
+
+            // Deep dive: check section styles
+            const section = this.node.querySelector('.dm-lair-section');
+            const sectionComputed = section ? window.getComputedStyle(section) : null;
+
+            console.log('🔍 [MeasurementObserver] FULL DIAGNOSTIC for component-11:', {
+                key: this.key,
+                // Heights
+                entryBoundingHeight: rect.height.toFixed(2),
+                entryOffsetHeight: this.node.offsetHeight,
+                sectionOffsetHeight: (section as HTMLElement)?.offsetHeight ?? 'N/A',
+                // Widths
+                entryWidth: rect.width.toFixed(2),
+                entryOffsetWidth: this.node.offsetWidth,
+                // Entry styles
+                entryFontSize,
+                entryPadding: computed?.padding ?? 'N/A',
+                entryMargin: computed?.margin ?? 'N/A',
+                // Section styles (the actual content)
+                sectionPadding: sectionComputed?.padding ?? 'N/A',
+                sectionMargin: sectionComputed?.margin ?? 'N/A',
+                sectionLineHeight: sectionComputed?.lineHeight ?? 'N/A',
+                sectionBackground: sectionComputed?.background?.substring(0, 30) ?? 'N/A',
+                // Font context
+                parentClass: parent?.className ?? 'none',
+                parentFontSize,
+                grandparentClass: grandparent?.className ?? 'none',
+                grandparentFontSize,
+                // Ancestry check
+                hasPagePhb: !!this.node.closest('.page.phb'),
+                hasMonsterFrame: !!this.node.closest('.monster.frame'),
+                hasCanvasColumn: !!this.node.closest('.canvas-column'),
+            });
+        }
+
         // Add child margin spacing for accurate measurements
         // getBoundingClientRect() includes padding/border but NOT child margins
         // Child margins can "escape" parent's bounding box due to margin collapse
@@ -880,7 +926,7 @@ export const MeasurementLayer: React.FC<MeasurementLayerProps> = ({
     const measurementVersionRef = useRef(0); // Track measurement version for proper incrementing
     const previousEntriesSignatureRef = useRef<string | null>(null);
     const previousPublishModeRef = useRef<boolean>(effectivePublishOnce);
-    
+
     // Phase 4 A2: Track ready state in ref so dispatcher callback can access current value
     const readyRef = useRef(ready);
     useEffect(() => {

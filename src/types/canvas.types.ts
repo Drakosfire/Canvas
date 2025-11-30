@@ -279,3 +279,173 @@ export interface PageLoadResponse {
     template: TemplateConfig;
 }
 
+// ============================================================================
+// Canvas Configuration (Phase 5 Architectural Contracts)
+// ============================================================================
+
+/**
+ * Debug configuration for Canvas operations.
+ */
+export interface CanvasDebugConfig {
+    /** Log measurement events */
+    logMeasurements?: boolean;
+    /** Log pagination decisions */
+    logPagination?: boolean;
+    /** Log timing/ready state changes */
+    logTiming?: boolean;
+    /** Log width verification */
+    logWidthVerification?: boolean;
+}
+
+/**
+ * Theme-specific frame configuration.
+ * Tells Canvas how much space theme containers (frames, borders) consume.
+ * 
+ * This allows Canvas to calculate accurate dimensions without the consumer
+ * needing to do complex calculations.
+ * 
+ * @example PHB Theme
+ * ```typescript
+ * const PHB_FRAME_CONFIG: FrameConfig = {
+ *     verticalBorderPx: 12.5,      // 6.25px top + 6.25px bottom
+ *     horizontalBorderPx: 10,      // 5px left + 5px right
+ *     columnPaddingPx: 10,         // 5px left + 5px right per column
+ *     columnVerticalPaddingPx: 16, // 8px top + 8px bottom
+ *     componentGapPx: 12,          // gap between components
+ *     pageFontSizePx: 12.8504,     // .page.phb computed font-size
+ *     frameFontSizePx: 12.0189,    // .monster.frame computed font-size
+ * };
+ * ```
+ */
+export interface FrameConfig {
+    /**
+     * Vertical border thickness (top + bottom).
+     * Example: PHB theme's .monster.frame has 6.25px top + 6.25px bottom = 12.5px
+     */
+    verticalBorderPx: number;
+
+    /**
+     * Horizontal border thickness (left + right).
+     * Example: PHB theme's .monster.frame has 5px left + 5px right = 10px
+     */
+    horizontalBorderPx?: number;
+
+    /**
+     * Column padding (left + right per column).
+     * Example: PHB theme columns have 5px left + 5px right = 10px per column
+     */
+    columnPaddingPx?: number;
+
+    /**
+     * Column vertical padding (top + bottom).
+     * Example: PHB theme columns have 8px top + 8px bottom = 16px
+     */
+    columnVerticalPaddingPx?: number;
+
+    /**
+     * Gap between components in a column.
+     * Example: PHB theme uses 12px gap between components
+     */
+    componentGapPx?: number;
+
+    /**
+     * CSS font-size context for the page container.
+     * Used when rendering measurement layer to match visible layer font metrics.
+     * Example: PHB theme's .page.phb has computed font-size ~12.85px
+     */
+    pageFontSizePx?: number;
+
+    /**
+     * CSS font-size context for the inner frame.
+     * Example: PHB theme's .monster.frame has computed font-size ~12.02px
+     */
+    frameFontSizePx?: number;
+
+    /**
+     * CSS class names for the measurement portal structure.
+     * Allows themes to specify their own class hierarchy.
+     */
+    portalClassNames?: {
+        /** Class for outer page container (default: 'page phb') */
+        page?: string;
+        /** Class for frame container (default: 'monster frame wide') */
+        frame?: string;
+        /** Class for column container (default: 'canvas-column') */
+        column?: string;
+    };
+}
+
+/**
+ * Configuration provided by consumer to Canvas.
+ * Canvas uses this to calculate all internal dimensions.
+ * 
+ * This is the primary contract between Canvas and its consumers.
+ * Consumer provides configuration, Canvas calculates everything else.
+ * 
+ * @example
+ * ```typescript
+ * const config: CanvasConfig = {
+ *     pageVariables,
+ *     frameConfig: PHB_FRAME_CONFIG,
+ *     ready: fontsReady && themeLoaded,
+ * };
+ * ```
+ */
+export interface CanvasConfig {
+    /**
+     * Page dimensions and layout settings.
+     */
+    pageVariables: PageVariables;
+
+    /**
+     * Theme-specific frame/container configuration.
+     * Tells Canvas how much space the theme's containers consume.
+     * If not provided, Canvas assumes no frame borders/padding.
+     */
+    frameConfig?: FrameConfig;
+
+    /**
+     * Ready signal: Consumer confirms CSS and fonts are loaded.
+     * Canvas will NOT measure until ready=true.
+     * 
+     * Typically: `fontsReady && themeLoaded`
+     */
+    ready: boolean;
+
+    /**
+     * Optional debug settings.
+     */
+    debug?: CanvasDebugConfig;
+}
+
+/**
+ * Calculated dimensions returned by Canvas.
+ * These are derived from CanvasConfig and should NOT be calculated by consumers.
+ */
+export interface CanvasDimensions {
+    /** Full page width in pixels */
+    pageWidthPx: number;
+    /** Full page height in pixels */
+    pageHeightPx: number;
+    /** Content area width (page - margins) */
+    contentWidthPx: number;
+    /** Content area height (page - top/bottom margins) */
+    contentHeightPx: number;
+    /** Width of each column */
+    columnWidthPx: number;
+    /** Gap between columns */
+    columnGapPx: number;
+    /** Available height for pagination (content - frame borders) */
+    regionHeightPx: number;
+    /** Width for measurement entries (column - padding) */
+    entryWidthPx: number;
+    /** Left margin in pixels */
+    leftMarginPx: number;
+    /** Right margin in pixels */
+    rightMarginPx: number;
+    /** Top margin in pixels */
+    topMarginPx: number;
+    /** Bottom margin in pixels */
+    bottomMarginPx: number;
+}
+

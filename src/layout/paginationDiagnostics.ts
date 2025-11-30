@@ -72,20 +72,20 @@ export const diagnosePagination = (): PaginationDiagnosticReport => {
     const columns = document.querySelectorAll('.dm-canvas-responsive .canvas-column');
     const overflowDetails: ColumnOverflowReport[] = [];
     const recommendations: string[] = [];
-    
+
     columns.forEach((col, idx) => {
         const htmlCol = col as HTMLElement;
         const scrollHeight = htmlCol.scrollHeight;
         const clientHeight = htmlCol.clientHeight;
         const overflow = scrollHeight - clientHeight;
-        
+
         if (overflow > 1) {
             // Get entries in this column
             const entries = col.querySelectorAll('.canvas-entry');
             const entryDetails: ColumnOverflowReport['entries'] = [];
             let totalMeasured = 0;
             let totalActual = 0;
-            
+
             entries.forEach((entry) => {
                 const htmlEntry = entry as HTMLElement;
                 const id = htmlEntry.dataset.entryId || 'unknown';
@@ -93,7 +93,7 @@ export const diagnosePagination = (): PaginationDiagnosticReport => {
                 const spanBottom = parseFloat(htmlEntry.dataset.spanBottom || '0');
                 const measuredHeight = spanBottom - spanTop;
                 const actualHeight = htmlEntry.getBoundingClientRect().height;
-                
+
                 entryDetails.push({
                     id,
                     measuredHeight: Math.round(measuredHeight * 100) / 100,
@@ -102,16 +102,16 @@ export const diagnosePagination = (): PaginationDiagnosticReport => {
                     spanTop: Math.round(spanTop * 100) / 100,
                     spanBottom: Math.round(spanBottom * 100) / 100,
                 });
-                
+
                 totalMeasured += measuredHeight;
                 totalActual += actualHeight;
             });
-            
+
             // Determine page index from the column's parent
             const page = col.closest('.page');
-            const pageIndex = page ? 
+            const pageIndex = page ?
                 Array.from(document.querySelectorAll('.dm-canvas-responsive .page')).indexOf(page) : -1;
-            
+
             overflowDetails.push({
                 columnIndex: idx,
                 pageIndex,
@@ -122,7 +122,7 @@ export const diagnosePagination = (): PaginationDiagnosticReport => {
                 totalMeasuredHeight: Math.round(totalMeasured * 100) / 100,
                 totalActualHeight: Math.round(totalActual * 100) / 100,
             });
-            
+
             // Find the culprit component
             const culprit = entryDetails.find(e => e.heightDiff > 5);
             if (culprit) {
@@ -130,11 +130,11 @@ export const diagnosePagination = (): PaginationDiagnosticReport => {
             }
         }
     });
-    
+
     // Generate recommendations
     if (overflowDetails.length > 0) {
         recommendations.push(`Total overflow columns: ${overflowDetails.length}`);
-        
+
         const avgOverflow = overflowDetails.reduce((sum, d) => sum + d.overflow, 0) / overflowDetails.length;
         if (avgOverflow < 20) {
             recommendations.push('Small overflows (<20px) - likely CSS margin/padding inconsistency');
@@ -144,7 +144,7 @@ export const diagnosePagination = (): PaginationDiagnosticReport => {
             recommendations.push('Large overflows (>100px) - likely component height estimation problem');
         }
     }
-    
+
     return {
         timestamp: new Date().toISOString(),
         pageCount: document.querySelectorAll('.dm-canvas-responsive .page').length,
@@ -162,7 +162,7 @@ export const diagnosePagination = (): PaginationDiagnosticReport => {
 export const quickCheck = (): void => {
     const columns = document.querySelectorAll('.dm-canvas-responsive .canvas-column');
     let hasOverflow = false;
-    
+
     console.log('=== PAGINATION QUICK CHECK ===');
     columns.forEach((col, idx) => {
         const htmlCol = col as HTMLElement;
@@ -171,7 +171,7 @@ export const quickCheck = (): void => {
         if (overflow > 1) {
             hasOverflow = true;
             console.log(`Column ${idx}: ${status} overflow=${overflow}px`);
-            
+
             // Log the entries in this column
             const entries = col.querySelectorAll('.canvas-entry');
             entries.forEach((entry) => {
@@ -181,7 +181,7 @@ export const quickCheck = (): void => {
             });
         }
     });
-    
+
     if (!hasOverflow) {
         console.log('✅ All columns fit!');
     }
@@ -195,26 +195,26 @@ export const quickCheck = (): void => {
 export const watchOverflow = (durationMs: number = 5000): void => {
     const startTime = Date.now();
     const snapshots: Array<{ time: number; overflows: number[] }> = [];
-    
+
     console.log(`=== WATCHING OVERFLOW for ${durationMs}ms ===`);
-    
+
     const interval = setInterval(() => {
         const columns = document.querySelectorAll('.dm-canvas-responsive .canvas-column');
         const overflows: number[] = [];
-        
+
         columns.forEach((col) => {
             const htmlCol = col as HTMLElement;
             overflows.push(htmlCol.scrollHeight - htmlCol.clientHeight);
         });
-        
+
         snapshots.push({ time: Date.now() - startTime, overflows });
-        
+
         if (Date.now() - startTime >= durationMs) {
             clearInterval(interval);
-            
+
             console.log('=== OVERFLOW WATCH RESULTS ===');
             console.log(`Snapshots taken: ${snapshots.length}`);
-            
+
             // Find columns that changed
             const colCount = snapshots[0]?.overflows.length || 0;
             for (let i = 0; i < colCount; i++) {
@@ -238,34 +238,34 @@ export const getUtilizationReport = (): UtilizationSummary => {
     const columnReports: ColumnUtilizationReport[] = [];
     const warnings: string[] = [];
     const LOW_UTILIZATION_THRESHOLD = 0.5; // 50%
-    
+
     columns.forEach((col, idx) => {
         const htmlCol = col as HTMLElement;
         const capacity = htmlCol.clientHeight;
-        
+
         // Get entries and calculate used height
         const entries = col.querySelectorAll('.canvas-entry');
         let used = 0;
         let continuationCount = 0;
-        
+
         entries.forEach((entry) => {
             const htmlEntry = entry as HTMLElement;
             const rect = htmlEntry.getBoundingClientRect();
             used += rect.height;
-            
+
             if (htmlEntry.dataset.isContinuation === 'true') {
                 continuationCount++;
             }
         });
-        
+
         // Determine page index
         const page = col.closest('.page');
-        const pageIndex = page ? 
+        const pageIndex = page ?
             Array.from(document.querySelectorAll('.dm-canvas-responsive .page')).indexOf(page) : -1;
-        
+
         const utilization = capacity > 0 ? used / capacity : 0;
         const isBelowThreshold = utilization < LOW_UTILIZATION_THRESHOLD;
-        
+
         columnReports.push({
             columnIndex: idx,
             pageIndex,
@@ -276,24 +276,24 @@ export const getUtilizationReport = (): UtilizationSummary => {
             continuationCount,
             isBelowThreshold,
         });
-        
+
         // Generate warnings for low utilization (but not last column)
         if (isBelowThreshold && idx < columns.length - 1 && entries.length > 0) {
             warnings.push(`Column ${idx} (Page ${pageIndex + 1}): Only ${Math.round(utilization * 100)}% utilized with ${entries.length} component(s)`);
         }
     });
-    
+
     // Calculate summary stats
     const utilizations = columnReports.map(c => c.utilization);
     const nonEmptyUtilizations = utilizations.filter(u => u > 0);
-    const avgUtilization = nonEmptyUtilizations.length > 0 
-        ? nonEmptyUtilizations.reduce((a, b) => a + b, 0) / nonEmptyUtilizations.length 
+    const avgUtilization = nonEmptyUtilizations.length > 0
+        ? nonEmptyUtilizations.reduce((a, b) => a + b, 0) / nonEmptyUtilizations.length
         : 0;
     const minUtilization = nonEmptyUtilizations.length > 0 ? Math.min(...nonEmptyUtilizations) : 0;
     const maxUtilization = nonEmptyUtilizations.length > 0 ? Math.max(...nonEmptyUtilizations) : 0;
     const variance = maxUtilization - minUtilization;
     const lowUtilizationColumns = columnReports.filter(c => c.isBelowThreshold && c.componentCount > 0).length;
-    
+
     // Add summary warnings
     if (avgUtilization < 0.6 && columnReports.filter(c => c.componentCount > 0).length > 1) {
         warnings.push(`Low average utilization: ${Math.round(avgUtilization * 100)}% (target: 70%+)`);
@@ -301,7 +301,7 @@ export const getUtilizationReport = (): UtilizationSummary => {
     if (variance > 0.5 && columnReports.filter(c => c.componentCount > 0).length > 1) {
         warnings.push(`High variance: ${Math.round(variance * 100)}% (columns not balanced)`);
     }
-    
+
     return {
         timestamp: new Date().toISOString(),
         pageCount: document.querySelectorAll('.dm-canvas-responsive .page').length,
@@ -322,12 +322,12 @@ export const getUtilizationReport = (): UtilizationSummary => {
  */
 export const printUtilizationReport = (): void => {
     const report = getUtilizationReport();
-    
+
     console.log('=== COLUMN UTILIZATION REPORT ===');
     console.log(`Pages: ${report.pageCount}, Columns: ${report.columnCount}`);
     console.log(`Average: ${Math.round(report.averageUtilization * 100)}% | Min: ${Math.round(report.minUtilization * 100)}% | Max: ${Math.round(report.maxUtilization * 100)}%`);
     console.log('');
-    
+
     // Group by page
     const pageMap = new Map<number, ColumnUtilizationReport[]>();
     report.columns.forEach(col => {
@@ -335,7 +335,7 @@ export const printUtilizationReport = (): void => {
         existing.push(col);
         pageMap.set(col.pageIndex, existing);
     });
-    
+
     pageMap.forEach((cols, pageIdx) => {
         console.log(`Page ${pageIdx + 1}:`);
         cols.forEach(col => {
@@ -349,13 +349,13 @@ export const printUtilizationReport = (): void => {
             console.log(`  Col ${col.columnIndex % 2 + 1}: ${bar} ${Math.round(col.utilization * 100)}% (${col.componentCount} components)${overflowIndicator}${warning}`);
         });
     });
-    
+
     if (report.warnings.length > 0) {
         console.log('');
         console.log('⚠️ WARNINGS:');
         report.warnings.forEach(w => console.log(`  - ${w}`));
     }
-    
+
     // Recommendations
     console.log('');
     if (report.variance > 0.3) {
@@ -414,28 +414,28 @@ export const takeSnapshot = (label: string = 'snapshot'): LayoutSnapshot => {
     const pages = document.querySelectorAll('.dm-canvas-responsive .page');
     const entries = document.querySelectorAll('.dm-canvas-responsive .canvas-entry');
     const columns = document.querySelectorAll('.dm-canvas-responsive .canvas-column');
-    
+
     const components: ComponentSnapshot[] = [];
     const overflowColumns: number[] = [];
     const columnUtilizations: LayoutSnapshot['columnUtilizations'] = [];
-    
+
     // Collect all component data
     entries.forEach((entry) => {
         const htmlEntry = entry as HTMLElement;
         const rect = htmlEntry.getBoundingClientRect();
-        
+
         // Find the column and page this entry is in
         const column = entry.closest('.canvas-column');
         const page = entry.closest('.page');
-        const columnIndex = column ? 
+        const columnIndex = column ?
             Array.from(columns).indexOf(column) : -1;
-        const pageIndex = page ? 
+        const pageIndex = page ?
             Array.from(pages).indexOf(page) : -1;
-        
+
         const spanTop = parseFloat(htmlEntry.dataset.spanTop || '0');
         const spanBottom = parseFloat(htmlEntry.dataset.spanBottom || '0');
         const measuredHeight = spanBottom - spanTop;
-        
+
         components.push({
             id: htmlEntry.dataset.entryId || 'unknown',
             measurementKey: htmlEntry.dataset.measurementKey || 'unknown',
@@ -451,27 +451,27 @@ export const takeSnapshot = (label: string = 'snapshot'): LayoutSnapshot => {
             heightDiff: Math.round((rect.height - measuredHeight) * 100) / 100,
         });
     });
-    
+
     // Collect column utilization and overflow data
     columns.forEach((col, idx) => {
         const htmlCol = col as HTMLElement;
         const capacity = htmlCol.clientHeight;
         const overflow = htmlCol.scrollHeight - capacity;
-        
+
         if (overflow > 1) {
             overflowColumns.push(idx);
         }
-        
+
         const colEntries = col.querySelectorAll('.canvas-entry');
         let used = 0;
         colEntries.forEach((entry) => {
             const rect = (entry as HTMLElement).getBoundingClientRect();
             used += rect.height;
         });
-        
+
         const page = col.closest('.page');
         const pageIndex = page ? Array.from(pages).indexOf(page) : -1;
-        
+
         columnUtilizations.push({
             pageIndex,
             columnIndex: idx,
@@ -479,7 +479,7 @@ export const takeSnapshot = (label: string = 'snapshot'): LayoutSnapshot => {
             componentCount: colEntries.length,
         });
     });
-    
+
     const snapshot: LayoutSnapshot = {
         timestamp: new Date().toISOString(),
         label,
@@ -490,16 +490,16 @@ export const takeSnapshot = (label: string = 'snapshot'): LayoutSnapshot => {
         hasOverflow: overflowColumns.length > 0,
         overflowColumns,
     };
-    
+
     // Store the snapshot
     snapshotStore.set(label, snapshot);
-    
+
     console.log(`📸 Snapshot "${label}" captured:`);
     console.log(`   Pages: ${snapshot.pageCount}, Components: ${snapshot.totalComponents}`);
     console.log(`   Overflow: ${snapshot.hasOverflow ? '❌ Yes (' + overflowColumns.join(', ') + ')' : '✅ No'}`);
     console.log(`   Use: __CANVAS_PAGINATION__.getSnapshot("${label}") to retrieve`);
     console.log(`   Use: __CANVAS_PAGINATION__.compare("before", "after") to diff`);
-    
+
     return snapshot;
 };
 
@@ -533,7 +533,7 @@ export const clearSnapshots = (): void => {
 export const compareSnapshots = (label1: string, label2: string): void => {
     const snap1 = snapshotStore.get(label1);
     const snap2 = snapshotStore.get(label2);
-    
+
     if (!snap1) {
         console.error(`Snapshot "${label1}" not found. Available: ${listSnapshots().join(', ')}`);
         return;
@@ -542,27 +542,27 @@ export const compareSnapshots = (label1: string, label2: string): void => {
         console.error(`Snapshot "${label2}" not found. Available: ${listSnapshots().join(', ')}`);
         return;
     }
-    
+
     console.log(`\n=== COMPARING: "${label1}" vs "${label2}" ===\n`);
-    
+
     // Summary differences
     console.log('📊 SUMMARY:');
     console.log(`   Pages: ${snap1.pageCount} → ${snap2.pageCount} ${snap1.pageCount !== snap2.pageCount ? '⚠️ CHANGED' : '✅'}`);
     console.log(`   Components: ${snap1.totalComponents} → ${snap2.totalComponents} ${snap1.totalComponents !== snap2.totalComponents ? '⚠️ CHANGED' : '✅'}`);
     console.log(`   Overflow: ${snap1.hasOverflow ? 'Yes' : 'No'} → ${snap2.hasOverflow ? 'Yes' : 'No'} ${snap1.hasOverflow !== snap2.hasOverflow ? '⚠️ CHANGED' : '✅'}`);
     console.log('');
-    
+
     // Build lookup maps
     const snap1Map = new Map(snap1.components.map(c => [c.id, c]));
     const snap2Map = new Map(snap2.components.map(c => [c.id, c]));
-    
+
     // Find placement changes
     const placementChanges: Array<{
         id: string;
         before: { page: number; col: number; spanTop: number };
         after: { page: number; col: number; spanTop: number };
     }> = [];
-    
+
     const heightChanges: Array<{
         id: string;
         beforeMeasured: number;
@@ -570,21 +570,21 @@ export const compareSnapshots = (label1: string, label2: string): void => {
         beforeActual: number;
         afterActual: number;
     }> = [];
-    
+
     const newComponents: string[] = [];
     const removedComponents: string[] = [];
-    
+
     // Check for changes
     snap2.components.forEach(comp2 => {
         const comp1 = snap1Map.get(comp2.id);
-        
+
         if (!comp1) {
             newComponents.push(comp2.id);
             return;
         }
-        
+
         // Check placement change
-        if (comp1.pageIndex !== comp2.pageIndex || 
+        if (comp1.pageIndex !== comp2.pageIndex ||
             comp1.columnIndex !== comp2.columnIndex ||
             Math.abs(comp1.spanTop - comp2.spanTop) > 1) {
             placementChanges.push({
@@ -593,7 +593,7 @@ export const compareSnapshots = (label1: string, label2: string): void => {
                 after: { page: comp2.pageIndex, col: comp2.columnIndex, spanTop: comp2.spanTop },
             });
         }
-        
+
         // Check height change
         if (Math.abs(comp1.measuredHeight - comp2.measuredHeight) > 1 ||
             Math.abs(comp1.actualHeight - comp2.actualHeight) > 1) {
@@ -606,13 +606,13 @@ export const compareSnapshots = (label1: string, label2: string): void => {
             });
         }
     });
-    
+
     snap1.components.forEach(comp1 => {
         if (!snap2Map.has(comp1.id)) {
             removedComponents.push(comp1.id);
         }
     });
-    
+
     // Report placement changes
     if (placementChanges.length > 0) {
         console.log('🔀 PLACEMENT CHANGES:');
@@ -626,7 +626,7 @@ export const compareSnapshots = (label1: string, label2: string): void => {
     } else {
         console.log('✅ No placement changes\n');
     }
-    
+
     // Report height changes
     if (heightChanges.length > 0) {
         console.log('📏 HEIGHT CHANGES:');
@@ -639,7 +639,7 @@ export const compareSnapshots = (label1: string, label2: string): void => {
     } else {
         console.log('✅ No height changes\n');
     }
-    
+
     // Report new/removed components
     if (newComponents.length > 0) {
         console.log('➕ NEW COMPONENTS:', newComponents.join(', '));
@@ -647,7 +647,7 @@ export const compareSnapshots = (label1: string, label2: string): void => {
     if (removedComponents.length > 0) {
         console.log('➖ REMOVED COMPONENTS:', removedComponents.join(', '));
     }
-    
+
     // Column utilization comparison
     console.log('\n📊 UTILIZATION COMPARISON:');
     const maxPages = Math.max(snap1.pageCount, snap2.pageCount);
@@ -655,17 +655,17 @@ export const compareSnapshots = (label1: string, label2: string): void => {
         console.log(`   Page ${p + 1}:`);
         const snap1Cols = snap1.columnUtilizations.filter(c => c.pageIndex === p);
         const snap2Cols = snap2.columnUtilizations.filter(c => c.pageIndex === p);
-        
+
         const maxCols = Math.max(snap1Cols.length, snap2Cols.length);
         for (let c = 0; c < maxCols; c++) {
             const col1 = snap1Cols.find(x => x.columnIndex % 2 === c);
             const col2 = snap2Cols.find(x => x.columnIndex % 2 === c);
-            
+
             const u1 = col1 ? Math.round(col1.utilization * 100) : 0;
             const u2 = col2 ? Math.round(col2.utilization * 100) : 0;
             const diff = u2 - u1;
             const diffStr = diff !== 0 ? ` (${diff > 0 ? '+' : ''}${diff}%)` : '';
-            
+
             console.log(`      Col ${c + 1}: ${u1}% → ${u2}%${diffStr}`);
         }
     }
@@ -677,18 +677,18 @@ export const compareSnapshots = (label1: string, label2: string): void => {
  */
 export const inspectComponent = (componentId: string): void => {
     const entry = document.querySelector(`[data-entry-id="${componentId}"]`) as HTMLElement;
-    
+
     if (!entry) {
         console.log(`Component ${componentId} not found in DOM`);
         return;
     }
-    
+
     const rect = entry.getBoundingClientRect();
     const computed = window.getComputedStyle(entry);
     const spanTop = parseFloat(entry.dataset.spanTop || '0');
     const spanBottom = parseFloat(entry.dataset.spanBottom || '0');
     const measuredHeight = spanBottom - spanTop;
-    
+
     console.log(`=== COMPONENT: ${componentId} ===`);
     console.log('Dataset:', {
         entryId: entry.dataset.entryId,
@@ -712,7 +712,7 @@ export const inspectComponent = (componentId: string): void => {
         boxSizing: computed.boxSizing,
     });
     console.log('Children:', entry.children.length);
-    
+
     // Check for images that might not have loaded
     const images = entry.querySelectorAll('img');
     if (images.length > 0) {

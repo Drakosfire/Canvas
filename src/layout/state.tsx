@@ -792,16 +792,19 @@ export const layoutReducer = (state: CanvasLayoutState, action: CanvasLayoutActi
         case 'SET_PAGE_VARIABLES':
             logLayoutDirty('SET_PAGE_VARIABLES', { measurementVersion: state.measurementVersion });
             logIsLayoutDirtySet('SET_PAGE_VARIABLES', { measurementVersion: state.measurementVersion });
-            // Fallback: ensure regionHeightPx has a usable value immediately from baseDimensions
+            // Preserve consumer-provided regionHeightPx (from initialRegionHeightPx in INITIALIZE)
+            // Only use baseDimensions.contentHeightPx as fallback if state has no valid regionHeight
             const incomingBase = action.payload.baseDimensions;
             const incomingHeight = action.payload.regionHeightPx > 0
                 ? action.payload.regionHeightPx
-                : (incomingBase ? incomingBase.contentHeightPx : 0);
+                : state.regionHeightPx > 0
+                    ? state.regionHeightPx  // Preserve existing consumer-provided value
+                    : (incomingBase ? incomingBase.contentHeightPx : 0);
             return recomputeEntries({
                 ...state,
                 pageVariables: action.payload.pageVariables,
                 columnCount: action.payload.columnCount,
-                regionHeightPx: incomingHeight || state.regionHeightPx,
+                regionHeightPx: incomingHeight,
                 pageWidthPx: action.payload.pageWidthPx,
                 pageHeightPx: action.payload.pageHeightPx,
                 baseDimensions: action.payload.baseDimensions,
@@ -1572,10 +1575,19 @@ export const useCanvasLayoutActions = () => {
             instances: ComponentInstance[],
             dataSources: ComponentDataSource[],
             registry: Record<string, ComponentRegistryEntry>,
-            adapters: import('../types/adapters.types').CanvasAdapters
+            adapters: import('../types/adapters.types').CanvasAdapters,
+            /**
+             * Optional initial region height. If provided, overrides contentHeightPx.
+             * Use when theme containers (e.g., frames with borders) reduce available space.
+             */
+            initialRegionHeightPx?: number
         ) => {
             const baseDimensions = computeBasePageDimensions(pageVariables);
             const columnCount = pageVariables.columns.columnCount;
+
+            // Use provided initialRegionHeightPx if available, otherwise fall back to contentHeightPx
+            // This allows consumers to account for theme-specific containers (e.g., frame borders)
+            const effectiveRegionHeightPx = initialRegionHeightPx ?? baseDimensions.contentHeightPx;
 
             dispatch({
                 type: 'INITIALIZE',
@@ -1583,7 +1595,7 @@ export const useCanvasLayoutActions = () => {
                     template,
                     pageVariables,
                     columnCount,
-                    regionHeightPx: baseDimensions.contentHeightPx,
+                    regionHeightPx: effectiveRegionHeightPx,
                     pageWidthPx: baseDimensions.widthPx,
                     pageHeightPx: baseDimensions.heightPx,
                     baseDimensions,
@@ -1608,7 +1620,11 @@ export const useCanvasLayoutActions = () => {
                 payload: {
                     pageVariables,
                     columnCount,
-                    regionHeightPx: baseDimensions.contentHeightPx,
+                    // NOTE: Do NOT pass regionHeightPx here - let the reducer preserve 
+                    // the consumer-provided initialRegionHeightPx from INITIALIZE.
+                    // If we passed baseDimensions.contentHeightPx, it would overwrite the
+                    // frame-adjusted height that the consumer calculated.
+                    regionHeightPx: 0, // Signal to preserve existing state.regionHeightPx
                     pageWidthPx: baseDimensions.widthPx,
                     pageHeightPx: baseDimensions.heightPx,
                     baseDimensions,

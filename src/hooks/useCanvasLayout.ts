@@ -6,20 +6,83 @@ import type {
     ComponentRegistryEntry,
     PageVariables,
     TemplateConfig,
+    CanvasConfig,
+    CanvasDimensions,
 } from '../types/canvas.types';
 import type { CanvasAdapters } from '../types/adapters.types';
 import type { MeasurementEntry } from '../layout/types';
 import { MeasurementLayer } from '../layout/measurement';
 import { useCanvasLayoutActions, useCanvasLayoutState } from '../layout/state';
-import { computeBasePageDimensions } from '../layout/utils';
+import { computeBasePageDimensions, computeCanvasDimensions } from '../layout/utils';
 
+/**
+ * Arguments for useCanvasLayout hook.
+ * 
+ * Phase 5 Architecture: Supports both legacy and new config patterns.
+ * - Legacy: Pass pageVariables + initialRegionHeightPx separately
+ * - New: Pass config object with pageVariables, frameConfig, and ready signal
+ */
 interface UseCanvasLayoutArgs {
     componentInstances: ComponentInstance[];
     template: TemplateConfig;
     dataSources: ComponentDataSource[];
     componentRegistry: Record<string, ComponentRegistryEntry>;
-    pageVariables: PageVariables;
     adapters: CanvasAdapters;
+
+    /**
+     * NEW (Phase 5): Unified configuration object.
+     * When provided, Canvas calculates all dimensions internally.
+     * Consumer just provides config, Canvas calculates everything.
+     */
+    config?: CanvasConfig;
+
+    /**
+     * LEGACY: Page variables (use config.pageVariables instead).
+     * @deprecated Use config.pageVariables instead
+     */
+    pageVariables?: PageVariables;
+
+    /**
+     * LEGACY: Initial region height (use config.frameConfig instead).
+     * @deprecated Use config.frameConfig.verticalBorderPx instead
+     */
+    initialRegionHeightPx?: number;
+}
+
+/**
+ * Return type for useCanvasLayout hook.
+ */
+interface UseCanvasLayoutReturn {
+    /** Current layout plan with paginated components */
+    plan: import('../layout/types').LayoutPlan | null;
+    /** Entries that need measurement */
+    measurementEntries: MeasurementEntry[];
+    /** Callback to receive measurement updates */
+    onMeasurements: (updates: import('../layout/types').MeasurementRecord[]) => void;
+    /** Callback when measurement cycle completes */
+    onMeasurementComplete: (version: number) => void;
+    /** Set region height (LEGACY - prefer using config.frameConfig) */
+    setRegionHeight: (height: number) => void;
+    /** MeasurementLayer component */
+    MeasurementLayer: typeof MeasurementLayer;
+    /** Base page dimensions */
+    baseDimensions: import('../layout/utils').BasePageDimensions;
+    /** Whether a layout update is pending */
+    hasPendingLayout: boolean;
+    /** Number of pages in pending layout */
+    pendingLayoutPageCount: number;
+    /** Current measurement status */
+    measurementStatus: import('../layout/types').MeasurementStatus | undefined;
+    /**
+     * NEW (Phase 5): Calculated dimensions.
+     * All values derived from config - consumer should NOT calculate these.
+     */
+    dimensions: CanvasDimensions | null;
+    /**
+     * NEW (Phase 5): Whether Canvas is ready to measure.
+     * True when config.ready is true.
+     */
+    ready: boolean;
 }
 
 export const useCanvasLayout = ({
@@ -27,9 +90,11 @@ export const useCanvasLayout = ({
     template,
     dataSources,
     componentRegistry,
-    pageVariables,
+    config,
+    pageVariables: legacyPageVariables,
     adapters,
-}: UseCanvasLayoutArgs) => {
+    initialRegionHeightPx: legacyInitialRegionHeightPx,
+}: UseCanvasLayoutArgs): UseCanvasLayoutReturn => {
     const state = useCanvasLayoutState();
     const {
         initialize,
@@ -44,6 +109,35 @@ export const useCanvasLayout = ({
         commitLayout,
         setRegionHeight,
     } = useCanvasLayoutActions();
+
+    // Phase 5: Support both new config and legacy params
+    // New config takes precedence if provided
+    const effectivePageVariables = config?.pageVariables ?? legacyPageVariables;
+    if (!effectivePageVariables) {
+        throw new Error('[useCanvasLayout] Either config.pageVariables or pageVariables must be provided');
+    }
+
+    // Calculate dimensions from config (Phase 5)
+    // If config is provided, Canvas owns all dimension calculations
+    const dimensions = useMemo<CanvasDimensions | null>(() => {
+        if (!config) {
+            return null; // Legacy mode - consumer calculates dimensions
+        }
+        return computeCanvasDimensions(config);
+    }, [config]);
+
+    // Compute initial region height
+    // Phase 5: Use dimensions.regionHeightPx from config
+    // Legacy: Use initialRegionHeightPx param
+    const effectiveInitialRegionHeightPx = useMemo(() => {
+        if (dimensions) {
+            return dimensions.regionHeightPx;
+        }
+        return legacyInitialRegionHeightPx;
+    }, [dimensions, legacyInitialRegionHeightPx]);
+
+    // Ready signal from config
+    const ready = config?.ready ?? true;
 
     const prevTemplateRef = useRef<TemplateConfig | null>(null);
     const prevComponentIdsRef = useRef<string[]>([]);
@@ -81,15 +175,17 @@ export const useCanvasLayout = ({
             console.debug('[useCanvasLayout] Initializing layout system', {
                 componentCount: componentInstances.length,
                 dataSourceCount: dataSources.length,
+                hasConfig: !!config,
+                ready,
             });
         }
 
-        initialize(template, pageVariables, componentInstances, dataSources, componentRegistry, adapters);
+        initialize(template, effectivePageVariables, componentInstances, dataSources, componentRegistry, adapters, effectiveInitialRegionHeightPx);
         prevTemplateRef.current = template;
         prevComponentIdsRef.current = memoizedComponents;
         prevDataSourceIdsRef.current = memoizedDataSources;
         prevRegistryKeysRef.current = memoizedRegistryKeys;
-        prevPageVariablesRef.current = pageVariables;
+        prevPageVariablesRef.current = effectivePageVariables;
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -148,13 +244,13 @@ export const useCanvasLayout = ({
 
     useEffect(() => {
         const previous = prevPageVariablesRef.current;
-        if (previous && JSON.stringify(previous) === JSON.stringify(pageVariables)) {
+        if (previous && JSON.stringify(previous) === JSON.stringify(effectivePageVariables)) {
             return;
         }
         // (Debug logging removed to reduce console noise)
-        prevPageVariablesRef.current = pageVariables;
-        setPageVariables(pageVariables);
-    }, [setPageVariables, pageVariables]);
+        prevPageVariablesRef.current = effectivePageVariables;
+        setPageVariables(effectivePageVariables);
+    }, [setPageVariables, effectivePageVariables]);
 
     // Track the last measurement version we've triggered pagination for
     // This prevents duplicate pagination runs when measurementStatus changes
@@ -263,7 +359,7 @@ export const useCanvasLayout = ({
     );
 
     const measurementEntries = state.measurementEntries;
-    const baseDimensions = state.baseDimensions ?? computeBasePageDimensions(pageVariables);
+    const baseDimensions = state.baseDimensions ?? computeBasePageDimensions(effectivePageVariables);
 
     const hasPendingLayout = Boolean(state.pendingLayout);
     const pendingLayoutPageCount = state.pendingLayout?.pages.length ?? 0;
@@ -279,6 +375,9 @@ export const useCanvasLayout = ({
         hasPendingLayout,
         pendingLayoutPageCount,
         measurementStatus: state.measurementStatus,
+        // Phase 5: New returns
+        dimensions,
+        ready,
     };
 };
 

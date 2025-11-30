@@ -19,18 +19,18 @@ export interface StateSummary {
     componentCount: number;
     dataSourceCount: number;
     pageCount: number;
-    
+
     // Measurement status
     measurementStatus: string;
     measurementCount: number;
     requiredMeasurementCount: number;
     missingMeasurementCount: number;
-    
+
     // Layout status
     isLayoutDirty: boolean;
     hasPendingLayout: boolean;
     bucketCount: number;
-    
+
     // Flags
     allComponentsMeasured: boolean;
     waitingForInitialMeasurements: boolean;
@@ -70,33 +70,33 @@ export const createStateDebugger = (state: CanvasLayoutState): StateDebugger => 
     summary: () => {
         // Use selectors for derived values (Phase 3.3b)
         const stats = selectMeasurementStats(state);
-        
+
         return {
             // Core counts
             componentCount: state.components.length,
             dataSourceCount: state.dataSources.length,
             pageCount: state.layoutPlan?.pages.length ?? 0,
-            
+
             // Measurement status - using selectors
             measurementStatus: state.measurementStatus ?? 'unknown',
             measurementCount: state.measurements.size,
             requiredMeasurementCount: stats.required,
             missingMeasurementCount: stats.missing,
-            
+
             // Layout status
             isLayoutDirty: state.isLayoutDirty,
             hasPendingLayout: state.pendingLayout !== null,
             bucketCount: state.buckets.size,
-            
+
             // Flags - using selector
             allComponentsMeasured: stats.complete,
             waitingForInitialMeasurements: state.waitingForInitialMeasurements,
         };
     },
-    
+
     warnings: () => {
         const warnings: StateWarning[] = [];
-        
+
         // Check for high page count (potential pagination issue)
         const pageCount = state.layoutPlan?.pages.length ?? 0;
         if (pageCount > 10) {
@@ -106,7 +106,7 @@ export const createStateDebugger = (state: CanvasLayoutState): StateDebugger => 
                 details: { pageCount, threshold: 10 },
             });
         }
-        
+
         // Check for missing measurements when should be complete (using selectors)
         const missingKeys = selectMissingMeasurementKeys(state);
         if (state.measurementStatus === 'complete' && missingKeys.size > 0) {
@@ -119,7 +119,7 @@ export const createStateDebugger = (state: CanvasLayoutState): StateDebugger => 
                 },
             });
         }
-        
+
         // Check for empty buckets when components exist
         if (state.components.length > 0 && state.buckets.size === 0 && state.measurementStatus === 'complete') {
             warnings.push({
@@ -128,7 +128,7 @@ export const createStateDebugger = (state: CanvasLayoutState): StateDebugger => 
                 details: { componentCount: state.components.length },
             });
         }
-        
+
         // Check for stuck dirty flag
         if (state.isLayoutDirty && state.pendingLayout !== null) {
             warnings.push({
@@ -136,7 +136,7 @@ export const createStateDebugger = (state: CanvasLayoutState): StateDebugger => 
                 message: 'Layout dirty with pending layout (pagination in progress)',
             });
         }
-        
+
         // Check for low column utilization (Phase 4 will address)
         if (state.layoutPlan && state.layoutPlan.pages.length > 1) {
             const lastPage = state.layoutPlan.pages[state.layoutPlan.pages.length - 1];
@@ -150,7 +150,7 @@ export const createStateDebugger = (state: CanvasLayoutState): StateDebugger => 
                 });
             }
         }
-        
+
         // Phase 3.3: Verify selectors match state (detect sync bugs)
         const selectorVerification = verifySelectorsMatchState(state);
         if (selectorVerification.issues.length > 0) {
@@ -160,15 +160,15 @@ export const createStateDebugger = (state: CanvasLayoutState): StateDebugger => 
                 details: { issues: selectorVerification.issues },
             });
         }
-        
+
         return warnings;
     },
-    
+
     getMeasurement: (key: MeasurementKey) => {
         const record = state.measurements.get(key);
         return record ? record.height : null;
     },
-    
+
     listMeasurements: () => {
         const result: Array<{ key: string; height: number }> = [];
         state.measurements.forEach((record, key) => {
@@ -176,11 +176,11 @@ export const createStateDebugger = (state: CanvasLayoutState): StateDebugger => 
         });
         return result.sort((a, b) => a.key.localeCompare(b.key));
     },
-    
+
     getState: () => state,
-    
+
     verifySelectors: () => verifySelectorsMatchState(state),
-    
+
     measurementStats: () => selectMeasurementStats(state),
 });
 
