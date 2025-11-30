@@ -1,6 +1,6 @@
 {
   "name": "dungeonmind-canvas",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Flexible, template-driven rendering engine for multi-column, multi-page layouts",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,8 +10,7 @@
     "test": "jest",
     "lint": "eslint src --ext .ts,.tsx",
     "type-check": "tsc --noEmit",
-    "link-react": "node scripts/link-react.js",
-    "postinstall": "node scripts/link-react.js"
+    "link-react": "node scripts/link-react.js"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^5.17.0",
