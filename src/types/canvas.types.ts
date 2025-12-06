@@ -121,6 +121,7 @@ export interface ComponentLayoutConfig {
  */
 export type ComponentDataReference =
     | { type: 'statblock'; path: string; sourceId?: string }
+    | { type: 'character'; path: string; sourceId?: string }
     | { type: 'custom'; key: string; sourceId?: string };
 
 /**

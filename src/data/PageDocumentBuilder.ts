@@ -12,9 +12,14 @@ import type {
     ComponentInstance,
 } from '../types/canvas.types';
 
-interface BuildPageDocumentOptions<T = unknown> {
+/**
+ * TODO: Add a data source type for the character data and statblock
+ */
+
+interface BuildPageDocumentOptions<T = unknown, C = unknown> {
     template: TemplateConfig;
-    statblockData: T; // Generic data type - applications provide their own type
+    statblockData?: T; // Generic data type - applications provide their own type
+    characterData?: C; // Character data for PlayerCharacterGenerator
     customData?: Record<string, unknown>;
     projectId?: string;
     ownerId?: string;
@@ -23,10 +28,11 @@ interface BuildPageDocumentOptions<T = unknown> {
 /**
  * Build a complete page document from a template and live data
  */
-export function buildPageDocument<T = unknown>(options: BuildPageDocumentOptions<T>): PageDocument {
+export function buildPageDocument<T = unknown, C = unknown>(options: BuildPageDocumentOptions<T, C>): PageDocument {
     const {
         template,
         statblockData,
+        characterData,
         customData = {},
         projectId = 'default-project',
         ownerId = 'default-user',
@@ -35,20 +41,35 @@ export function buildPageDocument<T = unknown>(options: BuildPageDocumentOptions
     const now = new Date().toISOString();
 
     // Create data sources
-    const dataSources: ComponentDataSource[] = [
-        {
+    const dataSources: ComponentDataSource[] = [];
+
+    // Add statblock data source if provided
+    if (statblockData !== undefined) {
+        dataSources.push({
             id: 'statblock-main',
             type: 'statblock',
             payload: statblockData,
             updatedAt: now,
-        },
-        {
-            id: 'custom-main',
-            type: 'custom',
-            payload: customData,
+        });
+    }
+
+    // Add character data source if provided
+    if (characterData !== undefined) {
+        dataSources.push({
+            id: 'character-main',
+            type: 'character',
+            payload: characterData,
             updatedAt: now,
-        },
-    ];
+        });
+    }
+
+    // Always add custom data source
+    dataSources.push({
+        id: 'custom-main',
+        type: 'custom',
+        payload: customData,
+        updatedAt: now,
+    });
 
     // Build component instances from template
     const componentInstances: ComponentInstance[] = template.defaultComponents.map((placement, index) => {
@@ -93,9 +114,10 @@ export function buildPageDocument<T = unknown>(options: BuildPageDocumentOptions
 /**
  * Update data sources in an existing page document
  */
-export function updatePageDataSources<T = unknown>(
+export function updatePageDataSources<T = unknown, C = unknown>(
     page: PageDocument,
     statblockData?: T,
+    characterData?: C,
     customData?: Record<string, unknown>
 ): PageDocument {
     const updatedSources = page.dataSources.map((source) => {
@@ -103,6 +125,14 @@ export function updatePageDataSources<T = unknown>(
             return {
                 ...source,
                 payload: statblockData,
+                updatedAt: new Date().toISOString(),
+            };
+        }
+
+        if (source.type === 'character' && characterData) {
+            return {
+                ...source,
+                payload: characterData,
                 updatedAt: new Date().toISOString(),
             };
         }

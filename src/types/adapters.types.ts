@@ -140,6 +140,19 @@ export interface CanvasAdapters {
 /**
  * Default implementations (basic, no domain knowledge)
  */
+/**
+ * Resolve a dot-separated path in an object.
+ * e.g., resolvePath(obj, 'dnd5eData.abilityScores') -> obj.dnd5eData.abilityScores
+ */
+function resolvePath(obj: Record<string, unknown>, path: string): unknown {
+    return path.split('.').reduce((current, key) => {
+        if (current && typeof current === 'object' && key in current) {
+            return (current as Record<string, unknown>)[key];
+        }
+        return undefined;
+    }, obj as unknown);
+}
+
 export const createDefaultDataResolver = (): DataResolver => ({
     resolveDataReference<T = unknown>(
         dataSources: ComponentDataSource[],
@@ -150,6 +163,13 @@ export const createDefaultDataResolver = (): DataResolver => ({
             if (source && typeof source.payload === 'object' && source.payload !== null) {
                 const payload = source.payload as Record<string, unknown>;
                 return payload[dataRef.path] as T | undefined;
+            }
+        } else if (dataRef.type === 'character') {
+            const source = dataSources.find((s) => s.type === 'character');
+            if (source && typeof source.payload === 'object' && source.payload !== null) {
+                const payload = source.payload as Record<string, unknown>;
+                // Support nested paths like 'dnd5eData.abilityScores'
+                return resolvePath(payload, dataRef.path) as T | undefined;
             }
         } else if (dataRef.type === 'custom') {
             const source = dataSources.find((s) => s.type === 'custom');
