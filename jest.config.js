@@ -12,9 +12,16 @@ module.exports = {
       },
     }],
   },
+  // Transform ESM packages like uuid
+  transformIgnorePatterns: [
+    '/node_modules/(?!(uuid)/)',
+  ],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
+    // Mock uuid for testing
+    '^uuid$': '<rootDir>/src/map/utils/__mocks__/uuid.ts',
   },
+  setupFiles: ['jest-canvas-mock'],
   setupFilesAfterEnv: ['<rootDir>/src/setupTests.ts'],
   collectCoverageFrom: [
     'src/**/*.{ts,tsx}',

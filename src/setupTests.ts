@@ -2,17 +2,16 @@
  * Jest setup file for Canvas tests
  */
 
-export {}; // Make this a module
-
 // Add custom jest matchers from jest-dom
-// Note: We don't import @testing-library/jest-dom here since it's optional
-// Tests can import it if needed
+import '@testing-library/jest-dom';
+
+export { }; // Make this a module
 
 // Mock ResizeObserver for tests
 global.ResizeObserver = class ResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+  observe() { }
+  unobserve() { }
+  disconnect() { }
 };
 
 // Mock requestIdleCallback for tests
@@ -20,7 +19,7 @@ if (typeof window !== 'undefined') {
   window.requestIdleCallback = window.requestIdleCallback || ((callback: IdleRequestCallback) => {
     return setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 5 }), 1);
   });
-  
+
   window.cancelIdleCallback = window.cancelIdleCallback || ((id: number) => {
     clearTimeout(id);
   });
@@ -36,6 +35,37 @@ Element.prototype.getBoundingClientRect = jest.fn(() => ({
   right: 0,
   x: 0,
   y: 0,
-  toJSON: () => {},
+  toJSON: () => { },
 }));
 
+// Mock HTMLCanvasElement for maskExport tests
+// JSDOM doesn't implement getContext('2d') by default
+HTMLCanvasElement.prototype.getContext = jest.fn(function (contextType: string) {
+  if (contextType === '2d') {
+    // Return a minimal 2D context mock
+    return {
+      clearRect: jest.fn(),
+      fillRect: jest.fn(),
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 0,
+      lineCap: '',
+      lineJoin: '',
+      globalCompositeOperation: '',
+      beginPath: jest.fn(),
+      moveTo: jest.fn(),
+      lineTo: jest.fn(),
+      stroke: jest.fn(),
+      fill: jest.fn(),
+      ellipse: jest.fn(),
+      // Add other methods as needed
+    } as any;
+  }
+  return null;
+});
+
+// Mock toDataURL for canvas
+HTMLCanvasElement.prototype.toDataURL = jest.fn(function (type?: string) {
+  // Return a minimal base64 data URL
+  return `data:${type || 'image/png'};base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==`;
+});

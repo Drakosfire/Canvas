@@ -162,3 +162,5 @@ export type {
     CanvasAdapters,
 } from './types/adapters.types';
 
+// Map Mode (Konva-based map canvas)
+export * from './map';
