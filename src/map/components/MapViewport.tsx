@@ -18,6 +18,13 @@ import { LabelLayer, LabelEditInfo } from './LabelLayer';
 import { MaskDrawingLayer } from './MaskDrawingLayer';
 import { MaskPreviewLayer } from './MaskPreviewLayer';
 
+/**
+ * Buffer around the Stage to allow drawing outside visible viewport.
+ * Shapes can be drawn into this buffer area, but it's clipped by the container.
+ * Mask export clips to image dimensions regardless.
+ */
+const STAGE_BUFFER = 500;
+
 export interface MapViewportProps {
   /** Viewport width in pixels */
   width: number;
@@ -140,34 +147,6 @@ export function MapViewport({
     onLabelPlace(adjustedX, adjustedY);
   };
 
-  // Handle wheel zoom
-  const handleWheel = (e: any) => {
-    if (!onViewChange) return;
-    
-    e.evt.preventDefault();
-    const scaleBy = 1.1;
-    const stage = e.target.getStage();
-    const oldScale = stage.scaleX();
-    
-    const pointer = stage.getPointerPosition();
-    const mousePointTo = {
-      x: (pointer.x - stage.x()) / oldScale,
-      y: (pointer.y - stage.y()) / oldScale,
-    };
-
-    const direction = e.evt.deltaY > 0 ? -1 : 1;
-    const newScale = direction > 0 ? oldScale * scaleBy : oldScale / scaleBy;
-    
-    // Clamp zoom between 0.1 and 5
-    const clampedScale = Math.max(0.1, Math.min(5, newScale));
-    
-    onViewChange({
-      zoom: clampedScale,
-      panX: pointer.x - mousePointTo.x * clampedScale,
-      panY: pointer.y - mousePointTo.y * clampedScale,
-    });
-  };
-
   // ========== Middle Mouse Button Panning ==========
   // Panning is locked to middle mouse button to avoid conflicts with label dragging
   const isPanningRef = useRef(false);
@@ -216,8 +195,9 @@ export function MapViewport({
     }
   }, []);
 
-  // Also handle mouse leaving the stage while panning
+  // Handle mouse leaving the stage while panning
   const handleMouseLeave = useCallback((e: any) => {
+    console.log(`🎭 [MapViewport] Stage handleMouseLeave: isPanning=${isPanningRef.current}, maskEnabled=${maskEnabled}`);
     if (isPanningRef.current) {
       isPanningRef.current = false;
       const container = e.target.getStage()?.container();
@@ -225,22 +205,32 @@ export function MapViewport({
         container.style.cursor = 'default';
       }
     }
-  }, []);
+  }, [maskEnabled]);
+
+  // Expanded stage dimensions to allow drawing outside visible viewport
+  // The container clips the overflow, but Konva can still track/render in this area
+  const expandedWidth = width + STAGE_BUFFER * 2;
+  const expandedHeight = height + STAGE_BUFFER * 2;
 
   return (
     <Stage
-      width={width}
-      height={height}
+      width={expandedWidth}
+      height={expandedHeight}
       draggable={false}
       scaleX={zoom}
       scaleY={zoom}
-      x={panX}
-      y={panY}
-      onWheel={handleWheel}
+      x={panX + STAGE_BUFFER}
+      y={panY + STAGE_BUFFER}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseLeave}
+      style={{
+        // Offset the Stage so the visible content aligns with the container
+        position: 'absolute',
+        left: -STAGE_BUFFER,
+        top: -STAGE_BUFFER,
+      }}
     >
       {/* Layer 1: Base Image (non-interactive) */}
       <Layer listening={false}>
@@ -287,6 +277,7 @@ export function MapViewport({
           onShapeAdd={onMaskShapeAdd || (() => {})}
           imageWidth={imageDimensions.width}
           imageHeight={imageDimensions.height}
+          stageBuffer={STAGE_BUFFER}
         />
       )}
 

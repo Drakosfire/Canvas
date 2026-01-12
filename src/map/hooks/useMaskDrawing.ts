@@ -122,6 +122,9 @@ export function useMaskDrawing(): UseMaskDrawingResult {
         return {
           ...prev,
           strokes: newStrokes,
+          // Also reset drawing state so endStroke doesn't add a duplicate
+          currentStroke: null,
+          isDrawing: false,
           undoStack: newUndoStack,
           redoStack: [],
         };

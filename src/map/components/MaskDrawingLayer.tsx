@@ -5,7 +5,7 @@
  * Implements TDD tests from T156-T161.
  */
 
-import React, { useRef, useCallback } from 'react';
+import React, { useRef, useCallback, useEffect } from 'react';
 import { Layer, Line, Rect, Ellipse } from 'react-konva';
 import type { KonvaEventObject } from 'konva/lib/Node';
 import type { MaskStroke, MaskTool } from '../types/mask.types';
@@ -25,6 +25,8 @@ export interface MaskDrawingLayerProps {
   imageWidth: number;
   /** Image height for hit detection area */
   imageHeight: number;
+  /** Buffer around the stage for extended drawing area (default: 0) */
+  stageBuffer?: number;
 }
 
 const MASK_COLOR = 'rgba(255, 0, 0, 0.5)'; // Semi-transparent red for visibility
@@ -41,11 +43,23 @@ export const MaskDrawingLayer: React.FC<MaskDrawingLayerProps> = ({
   onShapeAdd,
   imageWidth,
   imageHeight,
+  stageBuffer = 0,
 }) => {
   const isDrawingRef = useRef(false);
   const startPosRef = useRef<{ x: number; y: number } | null>(null);
   const [cursorPosition, setCursorPosition] = React.useState<{ x: number; y: number } | null>(null);
   const [previewShape, setPreviewShape] = React.useState<{ x: number; y: number; width: number; height: number } | null>(null);
+
+  // Sync internal state when isDrawing prop changes to false
+  // This handles the case where document-level listener ends a shape drawing
+  useEffect(() => {
+    if (!isDrawing && isDrawingRef.current) {
+      console.log(`🎨 [MaskLayer] Syncing internal state: isDrawing prop became false, resetting refs`);
+      isDrawingRef.current = false;
+      startPosRef.current = null;
+      setPreviewShape(null);
+    }
+  }, [isDrawing]);
 
   // Convert stage coordinates to image coordinates
   const getImageCoordinates = useCallback((e: KonvaEventObject<MouseEvent | TouchEvent>) => {
@@ -76,9 +90,12 @@ export const MaskDrawingLayer: React.FC<MaskDrawingLayerProps> = ({
 
       // Handle shape tools (rect/circle)
       if (activeTool === 'rect' || activeTool === 'circle') {
+        console.log(`🎨 [MaskLayer] Shape START: setting isDrawingRef=true, startPos=(${pos.x.toFixed(1)}, ${pos.y.toFixed(1)})`);
         isDrawingRef.current = true;
         startPosRef.current = pos;
         setPreviewShape({ x: pos.x, y: pos.y, width: 0, height: 0 });
+        // Call onStrokeStart to set isDrawing=true in provider, enabling document-level listeners
+        onStrokeStart(pos.x, pos.y);
         return;
       }
 
@@ -145,7 +162,20 @@ export const MaskDrawingLayer: React.FC<MaskDrawingLayerProps> = ({
   // Handle mouse/touch end
   const handleEnd = useCallback(
     (e: KonvaEventObject<MouseEvent | TouchEvent>) => {
+      // Log the event type to detect if Konva is synthesizing mouseup on leave
+      const eventType = e.evt?.type || 'unknown';
+      console.log(`🎨 [MaskLayer] handleEnd called: eventType=${eventType}, isDrawingRef=${isDrawingRef.current}, hasStartPos=${!!startPosRef.current}`);
+      
+      // Guard: Only accept real mouseup/touchend events, not synthetic events
+      // This prevents Konva from canceling shapes when mouse leaves canvas
+      const validEndEvents = ['mouseup', 'touchend'];
+      if (!validEndEvents.includes(eventType)) {
+        console.log(`⚠️ [MaskLayer] handleEnd BLOCKED: unexpected event type '${eventType}' (expected mouseup or touchend)`);
+        return;
+      }
+      
       if (!isDrawingRef.current || !startPosRef.current) {
+        console.log(`🎨 [MaskLayer] handleEnd early return: isDrawingRef=${isDrawingRef.current}, startPosRef=${startPosRef.current}`);
         return;
       }
 
@@ -154,24 +184,11 @@ export const MaskDrawingLayer: React.FC<MaskDrawingLayerProps> = ({
       const start = startPosRef.current;
       console.log(`🎨 [MaskLayer] Mouse/Touch end: image=(${endPos.x.toFixed(1)}, ${endPos.y.toFixed(1)}), tool=${activeTool}`);
 
-      // Handle shape tools (rect/circle) - finalize shape
+      // Shape tools (rect/circle) are handled by document-level listener in MapGenerator
+      // This ensures shapes work correctly even when mouse leaves/returns to canvas
+      // (Konva loses pointer tracking in that case, so Layer's onMouseUp doesn't fire reliably)
       if (activeTool === 'rect' || activeTool === 'circle') {
-        const bounds = {
-          x: Math.min(start.x, endPos.x),
-          y: Math.min(start.y, endPos.y),
-          width: Math.abs(endPos.x - start.x),
-          height: Math.abs(endPos.y - start.y),
-        };
-
-        // Only add shape if it has non-zero dimensions
-        if (bounds.width > 0 && bounds.height > 0) {
-          console.log(`🎨 [MaskLayer] Adding ${activeTool} shape: bounds=(${bounds.x.toFixed(1)}, ${bounds.y.toFixed(1)}, ${bounds.width.toFixed(1)}x${bounds.height.toFixed(1)})`);
-          onShapeAdd(bounds);
-        }
-
-        isDrawingRef.current = false;
-        startPosRef.current = null;
-        setPreviewShape(null);
+        console.log(`🎨 [MaskLayer] handleEnd: Shape tool - deferring to document listener`);
         return;
       }
 
@@ -188,27 +205,19 @@ export const MaskDrawingLayer: React.FC<MaskDrawingLayerProps> = ({
         return;
       }
     },
-    [activeTool, getImageCoordinates, onStrokeEnd, onShapeAdd, imageWidth, imageHeight]
+    [activeTool, getImageCoordinates, onStrokeEnd, imageWidth, imageHeight]
   );
 
-  // Handle mouse leave to hide cursor
+  // Handle mouse leave - just hide cursor, DON'T cancel operations
+  // Document-level listeners in MapGenerator handle continue/end outside canvas
   const handleMouseLeave = useCallback(() => {
-    if (!isDrawingRef.current) {
-      setCursorPosition(null);
-      return;
-    }
-
-    // Cancel current drawing operation
-    if (activeTool === 'rect' || activeTool === 'circle') {
-      isDrawingRef.current = false;
-      startPosRef.current = null;
-      setPreviewShape(null);
-    } else if (activeTool === 'brush' || activeTool === 'eraser') {
-      isDrawingRef.current = false;
-      startPosRef.current = null;
-      onStrokeEnd();
-    }
-  }, [activeTool, onStrokeEnd]);
+    console.log(`🎨 [MaskLayer] handleMouseLeave: isDrawingRef=${isDrawingRef.current}, activeTool=${activeTool}, hasPreviewShape=${!!previewShape}`);
+    setCursorPosition(null);
+    // Note: We intentionally do NOT cancel drawing here.
+    // This allows users to drag outside the canvas and continue drawing.
+    // The document-level listener in MapGenerator handles mouseup/mousemove
+    // outside the canvas bounds.
+  }, [activeTool, previewShape]);
 
   // Render a single stroke based on its type
   // Renders in chronological order to allow repainting over erased areas
@@ -294,12 +303,14 @@ export const MaskDrawingLayer: React.FC<MaskDrawingLayerProps> = ({
       onTouchEnd={handleEnd}
     >
       {/* Invisible hitbox for event capture - CRITICAL: Layer needs a shape to receive events */}
+      {/* Hitbox is expanded by stageBuffer on all sides to allow drawing outside the image */}
+      {/* This enables shape preview to render when dragging outside the image bounds */}
       {imageWidth > 0 && imageHeight > 0 && (
         <Rect
-          x={0}
-          y={0}
-          width={imageWidth}
-          height={imageHeight}
+          x={-stageBuffer}
+          y={-stageBuffer}
+          width={imageWidth + stageBuffer * 2}
+          height={imageHeight + stageBuffer * 2}
           fill="transparent"
           listening={true}
         />
