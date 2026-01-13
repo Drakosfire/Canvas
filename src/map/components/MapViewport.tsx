@@ -140,9 +140,10 @@ export function MapViewport({
   const handleLabelPlace = (x: number, y: number) => {
     if (!onLabelPlace) return;
     
-    // Adjust for stage transform (pan/zoom)
-    const adjustedX = (x - panX) / zoom;
-    const adjustedY = (y - panY) / zoom;
+    // Adjust for stage transform (pan/zoom) - account for STAGE_BUFFER offset
+    // The stage has x={panX + STAGE_BUFFER}, so we need to subtract STAGE_BUFFER
+    const adjustedX = (x - panX - STAGE_BUFFER) / zoom;
+    const adjustedY = (y - panY - STAGE_BUFFER) / zoom;
     
     onLabelPlace(adjustedX, adjustedY);
   };
