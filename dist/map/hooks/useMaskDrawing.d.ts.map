@@ -1,0 +1,1 @@
+{"version":3,"file":"useMaskDrawing.d.ts","sourceRoot":"","sources":["../../../src/map/hooks/useMaskDrawing.ts"],"names":[],"mappings":"AAAA;;;;;GAKG;AAIH,OAAO,KAAK,EAGV,gBAAgB,EAChB,kBAAkB,EACnB,MAAM,qBAAqB,CAAC;AAO7B,MAAM,WAAW,oBAAoB;IACnC,KAAK,EAAE,gBAAgB,CAAC;IACxB,OAAO,EAAE,kBAAkB,CAAC;CAC7B;AAED,wBAAgB,cAAc,IAAI,oBAAoB,CAsMrD"}

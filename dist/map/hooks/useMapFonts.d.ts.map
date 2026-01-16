@@ -1,0 +1,1 @@
+{"version":3,"file":"useMapFonts.d.ts","sourceRoot":"","sources":["../../../src/map/hooks/useMapFonts.ts"],"names":[],"mappings":"AAAA;;;;;GAKG;AAKH,MAAM,WAAW,iBAAiB;IAChC,6CAA6C;IAC7C,UAAU,EAAE,OAAO,CAAC;IACpB,0CAA0C;IAC1C,YAAY,EAAE,OAAO,CAAC;CACvB;AAED;;;;;GAKG;AACH,wBAAgB,WAAW,IAAI,iBAAiB,CAgE/C"}

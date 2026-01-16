@@ -7,7 +7,7 @@ node_modules/
 coverage/
 
 # Production
-dist/
+# dist/ - NOT ignored, needed for git dependency support
 build/
 
 # Environment

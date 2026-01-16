@@ -1,0 +1,131 @@
+/**
+ * Adapter interfaces for Canvas system
+ *
+ * Applications implement these adapters to provide domain-specific behavior
+ * to the generic Canvas layout engine.
+ */
+import type { ComponentDataSource, ComponentDataReference } from './canvas.types';
+/**
+ * Data resolution adapter
+ * Resolves data references to actual values from data sources
+ */
+export interface DataResolver {
+    /**
+     * Resolve a data reference to its value
+     * @param dataSources - Available data sources
+     * @param dataRef - Reference to resolve
+     * @returns Resolved value or undefined if not found
+     */
+    resolveDataReference<T = unknown>(dataSources: ComponentDataSource[], dataRef: ComponentDataReference): T | undefined;
+    /**
+     * Get the primary data source of a specific type
+     * @param dataSources - Available data sources
+     * @param type - Type of source to retrieve
+     * @returns Primary source payload or undefined
+     */
+    getPrimarySource<T = unknown>(dataSources: ComponentDataSource[], type: string): T | undefined;
+}
+/**
+ * List normalization adapter
+ * Normalizes and transforms list items
+ */
+export interface ListNormalizer {
+    /**
+     * Normalize list items (ensure array, filter nulls, etc.)
+     * @param items - Raw items (may be undefined, null, or not an array)
+     * @returns Normalized array of items
+     */
+    normalizeListItems<T = unknown>(items: T[] | undefined | null): T[];
+}
+/**
+ * Region content adapter
+ * Creates region-specific list content
+ */
+export interface RegionContentFactory {
+    /**
+     * Create region list content from items
+     * @param kind - Content kind identifier
+     * @param items - List items
+     * @param startIndex - Starting index for this slice
+     * @param totalCount - Total number of items across all segments
+     * @param isContinuation - Whether this is a continuation from previous region
+     * @param metadata - Optional metadata for the list
+     * @returns Region list content
+     */
+    createRegionContent<T = unknown>(kind: string, items: T[], startIndex: number, totalCount: number, isContinuation: boolean, metadata?: Record<string, unknown>): import('../types/canvas.types').RegionListContent;
+}
+/**
+ * Height estimation adapter
+ * Estimates component heights before measurement
+ */
+export interface HeightEstimator {
+    /**
+     * Estimate height of a single list item
+     * @param item - Item to estimate
+     * @returns Estimated height in pixels
+     */
+    estimateItemHeight<T = unknown>(item: T): number;
+    /**
+     * Estimate total height of a list
+     * @param items - List items
+     * @param isContinuation - Whether this is a continuation
+     * @returns Estimated height in pixels
+     */
+    estimateListHeight<T = unknown>(items: T[], isContinuation: boolean): number;
+    /**
+     * Estimate height of a component
+     * @param component - Component to estimate
+     * @returns Estimated height in pixels
+     */
+    estimateComponentHeight<T = unknown>(component: T): number;
+}
+/**
+ * Metadata extraction adapter
+ * Extracts metadata from data sources for export/display
+ */
+export interface MetadataExtractor {
+    /**
+     * Extract display name from data source
+     * @param dataSources - Available data sources
+     * @returns Display name or undefined
+     */
+    extractDisplayName(dataSources: ComponentDataSource[]): string | undefined;
+    /**
+     * Extract metadata for export
+     * @param dataSources - Available data sources
+     * @returns Metadata object
+     */
+    extractExportMetadata(dataSources: ComponentDataSource[]): Record<string, unknown>;
+}
+/**
+ * Complete adapter bundle
+ * Combines all adapters into a single interface
+ */
+export interface CanvasAdapters {
+    dataResolver: DataResolver;
+    listNormalizer: ListNormalizer;
+    regionContentFactory: RegionContentFactory;
+    heightEstimator: HeightEstimator;
+    metadataExtractor: MetadataExtractor;
+    /**
+     * Component type to region kind mapping
+     * Maps component types to their list content kind (or undefined for non-list components)
+     * Example: { 'action-section': 'action-list', 'trait-list': 'trait-list' }
+     */
+    componentTypeMap: Record<string, string | undefined>;
+}
+export declare const createDefaultDataResolver: () => DataResolver;
+export declare const createDefaultListNormalizer: () => ListNormalizer;
+export declare const createDefaultHeightEstimator: (defaultItemHeight?: number, defaultComponentHeight?: number) => HeightEstimator;
+export declare const createDefaultMetadataExtractor: () => MetadataExtractor;
+/**
+ * Create default adapter bundle
+ * @param options - Configuration options
+ * @returns Complete adapter bundle with defaults
+ */
+export declare function createDefaultAdapters(options?: {
+    defaultItemHeight?: number;
+    defaultComponentHeight?: number;
+    componentTypeMap?: Record<string, string | undefined>;
+}): CanvasAdapters;
+//# sourceMappingURL=adapters.types.d.ts.map
