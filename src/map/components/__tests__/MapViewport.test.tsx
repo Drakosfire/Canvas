@@ -7,7 +7,7 @@
 
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import { MapViewport } from '../MapViewport';
+import { MapViewport, STAGE_BUFFER } from '../MapViewport';
 import { DEFAULT_GRID_CONFIG } from '../../types/map.types';
 
 // Mock Konva components
@@ -62,8 +62,8 @@ describe('MapViewport', () => {
       render(<MapViewport {...defaultProps} width={1200} height={900} />);
       
       const stage = screen.getByTestId('konva-stage');
-      expect(stage).toHaveAttribute('width', '1200');
-      expect(stage).toHaveAttribute('height', '900');
+      expect(stage).toHaveAttribute('width', String(1200 + STAGE_BUFFER * 2));
+      expect(stage).toHaveAttribute('height', String(900 + STAGE_BUFFER * 2));
     });
 
     it('should render at least one Layer', () => {
@@ -181,11 +181,11 @@ describe('MapViewport', () => {
   });
 
   describe('interactivity', () => {
-    it('should have Stage set as draggable for panning', () => {
+    it('should use middle-mouse panning instead of Stage draggable', () => {
       render(<MapViewport {...defaultProps} />);
       
       const stage = screen.getByTestId('konva-stage');
-      expect(stage).toHaveAttribute('draggable', 'true');
+      expect(stage).not.toHaveAttribute('draggable', 'true');
     });
   });
 });

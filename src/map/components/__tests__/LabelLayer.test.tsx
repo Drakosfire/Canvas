@@ -12,8 +12,8 @@ import { MapLabel, FONT_OPTIONS, ROTATION_OPTIONS } from '../../types/map.types'
 
 // Mock Konva components
 jest.mock('react-konva', () => ({
-  Layer: ({ children, ...props }: any) => (
-    <div data-testid="konva-layer">{children}</div>
+  Layer: ({ children, onClick, ...props }: any) => (
+    <div data-testid="konva-layer" onClick={onClick}>{children}</div>
   ),
   Text: ({ text, x, y, rotation, fontFamily, fontSize, fill, draggable, onClick, onDblClick, onDragEnd, ...props }: any) => (
     <div
@@ -25,12 +25,30 @@ jest.mock('react-konva', () => ({
       data-font-family={fontFamily}
       data-font-size={fontSize}
       data-fill={fill}
-      data-draggable={draggable}
+      data-draggable={String(draggable)}
       onClick={onClick}
       onDoubleClick={onDblClick}
       onDragEnd={onDragEnd}
     />
   ),
+  Rect: ({ onClick, ...props }: any) => (
+    <div
+      data-testid="konva-rect"
+      onClick={() => {
+        onClick?.({
+          target: {
+            getStage: () => ({
+              getPointerPosition: () => ({ x: 500, y: 600 }),
+            }),
+          },
+        });
+      }}
+    />
+  ),
+  Group: ({ children, onClick, ...props }: any) => (
+    <div data-testid="konva-group" onClick={onClick}>{children}</div>
+  ),
+  Circle: () => <div data-testid="konva-circle" />,
   Transformer: ({ ...props }: any) => (
     <div data-testid="konva-transformer" />
   ),
@@ -120,10 +138,8 @@ describe('LabelLayer', () => {
     });
 
     it('should highlight selected label', () => {
-      render(<LabelLayer {...defaultProps} selectedLabelId="label-1" />);
+      render(<LabelLayer {...defaultProps} selectedLabelId="label-1" mode="label" />);
       
-      const texts = screen.getAllByTestId('konva-text');
-      // Selected label should have transformer (visual indicator)
       const transformer = screen.queryByTestId('konva-transformer');
       expect(transformer).toBeInTheDocument();
     });
@@ -153,18 +169,12 @@ describe('LabelLayer', () => {
       const texts = screen.getAllByTestId('konva-text');
       const firstText = texts[0];
       
-      // Simulate drag end
-      const dragEvent = {
+      fireEvent.dragEnd(firstText, {
         target: {
           x: () => 150,
           y: () => 250,
         },
-      };
-      
-      const onDragEnd = (firstText as any).onDragEnd;
-      if (onDragEnd) {
-        onDragEnd(dragEvent);
-      }
+      });
       
       expect(onLabelUpdate).toHaveBeenCalledWith('label-1', { x: 150, y: 250 });
     });
@@ -186,26 +196,22 @@ describe('LabelLayer', () => {
   });
 
   describe('label placement mode', () => {
-    it('should call onLabelUpdate with new label when clicked in label mode', () => {
-      const onLabelUpdate = jest.fn();
+    it('should call onLabelPlace when background is clicked in label mode', () => {
+      const onLabelPlace = jest.fn();
       render(
         <LabelLayer
           {...defaultProps}
-          onLabelUpdate={onLabelUpdate}
           mode="label"
-          onLabelPlace={(x, y) => {
-            onLabelUpdate('new-label', { text: 'New Label', x, y });
-          }}
+          imageWidth={1024}
+          imageHeight={1024}
+          onLabelPlace={onLabelPlace}
         />
       );
       
-      const layer = screen.getByTestId('konva-layer');
+      const background = screen.getByTestId('konva-rect');
+      fireEvent.click(background);
       
-      // Simulate click on layer (not on existing label)
-      fireEvent.click(layer, { clientX: 500, clientY: 600 });
-      
-      // Should create new label at click position
-      expect(onLabelUpdate).toHaveBeenCalled();
+      expect(onLabelPlace).toHaveBeenCalledWith(500, 600);
     });
   });
 

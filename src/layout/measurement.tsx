@@ -546,8 +546,12 @@ class MeasurementObserver {
 
         // WIDTH GATE: Skip measurement if actual width doesn't match expected (CSS not applied yet)
         // The entry has inline style width set; check if rendered width matches
-        const expectedWidth = this.node.style.width ? parseFloat(this.node.style.width) : null;
-        if (expectedWidth != null && rect.width > 0) {
+        const styleWidth = this.node.style.width;
+        const expectedWidth =
+            styleWidth && styleWidth !== 'auto' && !styleWidth.includes('%')
+                ? parseFloat(styleWidth)
+                : null;
+        if (expectedWidth != null && !Number.isNaN(expectedWidth) && rect.width > 0) {
             const widthDiff = Math.abs(rect.width - expectedWidth);
             // Allow 5px tolerance for subpixel rendering
             if (widthDiff > 5) {

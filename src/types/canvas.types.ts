@@ -119,10 +119,16 @@ export interface ComponentLayoutConfig {
  *   | { type: 'my-source'; path: string; sourceId?: string };
  * ```
  */
-export type ComponentDataReference =
-    | { type: 'statblock'; path: string; sourceId?: string }
-    | { type: 'character'; path: string; sourceId?: string }
-    | { type: 'custom'; key: string; sourceId?: string };
+export interface ComponentDataReference {
+    /** Data source type identifier (e.g. 'statblock', 'character', 'custom') */
+    type: string;
+    /** Dot-path into the source payload (for structured sources) */
+    path?: string;
+    /** Key into custom payload (for type: 'custom') */
+    key?: string;
+    /** Optional explicit source id override */
+    sourceId?: string;
+}
 
 /**
  * Generic data source.

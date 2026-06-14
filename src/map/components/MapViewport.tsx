@@ -23,7 +23,7 @@ import { MaskPreviewLayer } from './MaskPreviewLayer';
  * Shapes can be drawn into this buffer area, but it's clipped by the container.
  * Mask export clips to image dimensions regardless.
  */
-const STAGE_BUFFER = 500;
+export const STAGE_BUFFER = 500;
 
 export interface MapViewportProps {
   /** Viewport width in pixels */

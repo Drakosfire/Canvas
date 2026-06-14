@@ -1,0 +1,10 @@
+export declare const Stage: ({ children, ...props }: any) => import("react/jsx-runtime").JSX.Element;
+export declare const Layer: ({ children, ...props }: any) => import("react/jsx-runtime").JSX.Element;
+export declare const Image: (props: any) => import("react/jsx-runtime").JSX.Element;
+export declare const Line: (props: any) => import("react/jsx-runtime").JSX.Element;
+export declare const Text: (props: any) => import("react/jsx-runtime").JSX.Element;
+export declare const Rect: (props: any) => import("react/jsx-runtime").JSX.Element;
+export declare const Group: ({ children, ...props }: any) => import("react/jsx-runtime").JSX.Element;
+export declare const Circle: (props: any) => import("react/jsx-runtime").JSX.Element;
+export declare const Transformer: (props: any) => import("react/jsx-runtime").JSX.Element;
+//# sourceMappingURL=react-konva.d.ts.map

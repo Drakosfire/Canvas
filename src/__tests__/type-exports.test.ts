@@ -1,16 +1,38 @@
 /**
  * Type export tests
- * Verifies that all expected types are exported from the main package
+ * Verifies that expected types are exported from package entrypoints
  */
 
 import * as Canvas from '../index';
+import * as Layout from '../layout/index';
+import * as Map from '../map/index';
+import * as Dev from '../dev/index';
 
 describe('Package Type Exports', () => {
-    it('exports registry functions', () => {
+    it('exports registry functions from root barrel', () => {
         expect(typeof Canvas.createComponentRegistry).toBe('function');
         expect(typeof Canvas.getComponentEntry).toBe('function');
         expect(typeof Canvas.getAllComponentTypes).toBe('function');
         expect(typeof Canvas.isValidComponentType).toBe('function');
+    });
+
+    it('exports layout functions from layout subpath without map-only APIs', () => {
+        expect(typeof Layout.buildPageDocument).toBe('function');
+        expect(typeof Layout.useCanvasLayout).toBe('function');
+        expect(Layout.CanvasPage).toBeDefined();
+        expect((Layout as Record<string, unknown>).MapViewport).toBeUndefined();
+    });
+
+    it('exports map functions from map subpath', () => {
+        expect(typeof Map.useMapCanvas).toBe('function');
+        expect(Map.MapViewport).toBeDefined();
+        expect(typeof Map.exportMaskToBase64).toBe('function');
+    });
+
+    it('exports dev diagnostics from dev subpath only', () => {
+        expect(typeof Dev.exposeStateDebugger).toBe('function');
+        expect(typeof Dev.diagnosePagination).toBe('function');
+        expect((Canvas as Record<string, unknown>).exposeStateDebugger).toBeUndefined();
     });
 
     it('exports data builder functions', () => {
@@ -33,7 +55,6 @@ describe('Package Type Exports', () => {
     });
 
     it('exports all expected types', () => {
-        // Type-only test - TypeScript will error if types don't exist
         type TestTypes = {
             ComponentInstance: Canvas.ComponentInstance;
             ComponentDataSource: Canvas.ComponentDataSource;
@@ -45,7 +66,6 @@ describe('Package Type Exports', () => {
             PageDocument: Canvas.PageDocument;
         };
 
-        // If we get here, types exist
         expect(true).toBe(true);
     });
 });

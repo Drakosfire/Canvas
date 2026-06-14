@@ -104,8 +104,8 @@
 
 ### Planning Documents (2)
 
-1. `Docs/ProjectDiary/2025/2025-11-02-session-4-integration-handoff.md` - Next session handoff
-2. `Docs/ProjectDiary/2025/Canvas/DungeonMindCanvas_Vision.md` - Updated with parallel strategy
+1. `Canvas/STATUS.md` - Current progress
+2. `Canvas/ARCHITECTURE.md` - Architecture overview
 
 ### Updated Files (4)
 
@@ -206,7 +206,7 @@
 
 ## 🎯 Next Session: Integration
 
-**Handoff Document:** `Docs/ProjectDiary/2025/2025-11-02-session-4-integration-handoff.md`
+**Handoff Document:** `Canvas/HANDOFF_LOCKED_SUMMARY.md`
 
 **Quick Start:**
 ```bash
@@ -324,7 +324,7 @@ cd LandingPage && pnpm dev
 
 **Next Action:**
 - Start Session 4 (Integration) when ready
-- Use handoff: `Docs/ProjectDiary/2025/2025-11-02-session-4-integration-handoff.md`
+- Use handoff: `Canvas/HANDOFF_LOCKED_SUMMARY.md`
 
 **Time to MVP:** 2-3 hours
 

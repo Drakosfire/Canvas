@@ -19,6 +19,9 @@ var __spreadArray = (this && this.__spreadArray) || function (to, from, pack) {
     return to.concat(ar || Array.prototype.slice.call(from));
 };
 import { toRegionContent } from './utils-generic';
+import { advanceCursor, computeSpan, createCursor, fitsInRegion, } from './paginate/cursor';
+import { areInputsIdentical, debugLog, getDebugComponentIds, hashMeasurements, isComponentDebugEnabled, isCursorDebugEnabled, isPaginationDebugEnabled, isPlannerDebugEnabled, logPaginationDecision, logPaginationTrace, nextDebugRunId, normalizeComponentId, paginationStats, recordLastPaginationInputs, shouldLogPaginationDecisions, } from './paginate/debug';
+export { isComponentDebugEnabled, normalizeComponentId } from './paginate/debug';
 import { COMPONENT_VERTICAL_SPACING_PX, LIST_ITEM_SPACING_PX, COLUMN_PADDING_PX, computeMeasurementKey, regionKey, toColumnType, DEFAULT_COMPONENT_HEIGHT_PX, } from './utils';
 import { isDebugEnabled } from './debugFlags';
 import { buildSegmentPlan, SegmentRerouteCache } from './planner';
@@ -62,246 +65,6 @@ var createEmptyPlan = function () { return ({
 var ENTRY_REMOVAL_OVERFLOW_THRESHOLD_PX = 5;
 // Significant region height change threshold: Reset already-rerouted flag if region height changes by more than this
 var SIGNIFICANT_REGION_HEIGHT_CHANGE_PX = 10;
-// No default debug components - use CLI/env vars to specify: npm run canvas-debug -- component-1 component-2
-var DEFAULT_DEBUG_COMPONENT_IDS = [];
-var parseComponentIdList = function (value) {
-    if (Array.isArray(value)) {
-        return value
-            .map(function (item) { return (typeof item === 'string' ? item.trim() : ''); })
-            .filter(function (item) { return item.length > 0; });
-    }
-    if (typeof value === 'string') {
-        return value
-            .split(/[, ]+/)
-            .map(function (item) { return item.trim(); })
-            .filter(function (item) { return item.length > 0; });
-    }
-    if (value && typeof value === 'object') {
-        return parseComponentIdList(value.ids);
-    }
-    return [];
-};
-var readComponentIdsFromEnv = function () {
-    // React Scripts replaces process.env.REACT_APP_* at build time
-    // Access directly - webpack will replace with literal string or undefined
-    var reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_COMPONENTS;
-    if (reactAppValue) {
-        return parseComponentIdList(reactAppValue);
-    }
-    // Fallback to non-prefixed var (for Node.js/server-side)
-    var envValue = typeof process !== 'undefined' && process.env ? process.env.CANVAS_DEBUG_COMPONENTS : undefined;
-    return parseComponentIdList(envValue);
-};
-var readComponentIdsFromGlobal = function () {
-    if (typeof globalThis === 'undefined') {
-        return [];
-    }
-    var globalValue = globalThis.__CANVAS_DEBUG_COMPONENTS;
-    return parseComponentIdList(globalValue);
-};
-var readComponentIdsFromStorage = function () {
-    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
-        return [];
-    }
-    try {
-        var stored = window.localStorage.getItem('canvas-debug:components');
-        return parseComponentIdList(stored);
-    }
-    catch (_a) {
-        return [];
-    }
-};
-var buildDebugComponentSet = function () {
-    var ids = new Set();
-    DEFAULT_DEBUG_COMPONENT_IDS.forEach(function (id) { return ids.add(id); });
-    readComponentIdsFromEnv().forEach(function (id) { return ids.add(id); });
-    readComponentIdsFromGlobal().forEach(function (id) { return ids.add(id); });
-    readComponentIdsFromStorage().forEach(function (id) { return ids.add(id); });
-    return ids;
-};
-var DEBUG_COMPONENT_IDS = buildDebugComponentSet();
-/**
- * Normalize component IDs to zero-padded format for consistent logging.
- * Examples: "component-0" -> "component-00", "component-1" -> "component-01", "component-10" -> "component-10"
- *
- * @export
- * Exported for use in measurement.tsx and other modules
- */
-export var normalizeComponentId = function (componentId) {
-    var match = componentId.match(/^component-(\d+)$/);
-    if (match) {
-        var num = parseInt(match[1], 10);
-        return "component-".concat(num.toString().padStart(2, '0'));
-    }
-    return componentId; // Return as-is if not in expected format
-};
-/**
- * Check if a component ID matches a normalized debug component ID.
- * This allows checking against zero-padded IDs (e.g., "component-01") even if the actual ID is "component-1".
- */
-var matchesDebugComponent = function (componentId, debugId) {
-    var normalized = normalizeComponentId(componentId);
-    var normalizedDebug = normalizeComponentId(debugId);
-    return normalized === normalizedDebug;
-};
-var isPaginationDebugEnabled = function () { return isDebugEnabled('paginate-spellcasting'); };
-var isPlannerDebugEnabled = function () { return isDebugEnabled('planner-spellcasting'); };
-var isCursorDebugEnabled = function () { return isDebugEnabled('cursor'); };
-// Only debug components explicitly specified via CLI/env vars
-// If "*" is in the set, debug all components; otherwise check if component ID is in set
-var shouldDebugComponent = function (componentId) {
-    return DEBUG_COMPONENT_IDS.has('*') || DEBUG_COMPONENT_IDS.has(componentId);
-};
-// Export for use in other modules (e.g., StatblockPage.tsx)
-export var isComponentDebugEnabled = function (componentId) {
-    return shouldDebugComponent(componentId);
-};
-// Log debug configuration on module load (once per page load)
-// Check in browser context (webpack replaces process.env.REACT_APP_* at build time)
-if (typeof window !== 'undefined') {
-    var enabledFlags = [];
-    if (isPaginationDebugEnabled())
-        enabledFlags.push('paginate');
-    if (isPlannerDebugEnabled())
-        enabledFlags.push('planner');
-    if (isCursorDebugEnabled())
-        enabledFlags.push('cursor');
-    if (isDebugEnabled('layout-plan-diff'))
-        enabledFlags.push('plan-diff');
-    if (isDebugEnabled('measurement-spellcasting'))
-        enabledFlags.push('measurement');
-    if (isDebugEnabled('layout-dirty'))
-        enabledFlags.push('layout');
-    if (isDebugEnabled('measure-first'))
-        enabledFlags.push('measure-first');
-    // Always log debug configuration in browser (removed conditional to ensure visibility)
-    // eslint-disable-next-line no-console
-    console.log('🎯 [Canvas Debug] Active configuration:', {
-        componentIds: Array.from(DEBUG_COMPONENT_IDS),
-        wildcardEnabled: DEBUG_COMPONENT_IDS.has('*'),
-        enabledFlags: enabledFlags.length > 0 ? enabledFlags : ['none'],
-        source: {
-            env: readComponentIdsFromEnv().length > 0 ? 'env' : null,
-            global: readComponentIdsFromGlobal().length > 0 ? 'global' : null,
-            storage: readComponentIdsFromStorage().length > 0 ? 'storage' : null,
-            default: DEFAULT_DEBUG_COMPONENT_IDS.length > 0 ? 'default' : null,
-        },
-        envVars: {
-            // React Scripts replaces process.env.REACT_APP_* at build time
-            REACT_APP_CANVAS_DEBUG_COMPONENTS: process.env.REACT_APP_CANVAS_DEBUG_COMPONENTS || 'not set',
-            REACT_APP_CANVAS_DEBUG_PAGINATE: process.env.REACT_APP_CANVAS_DEBUG_PAGINATE || 'not set',
-            REACT_APP_CANVAS_DEBUG_PLANNER: process.env.REACT_APP_CANVAS_DEBUG_PLANNER || 'not set',
-        },
-        diagnostic: {
-            DEBUG_COMPONENT_IDS_size: DEBUG_COMPONENT_IDS.size,
-            enabledFlags_length: enabledFlags.length,
-            NODE_ENV: typeof process !== 'undefined' ? process.env.NODE_ENV : 'browser',
-        },
-    });
-}
-var logPaginationTrace = function (emoji, label, payload) {
-    if (!isPaginationDebugEnabled()) {
-        return;
-    }
-    if (typeof payload !== 'undefined') {
-        console.log("".concat(emoji, " [paginate][Debug] ").concat(label), payload);
-    }
-    else {
-        console.log("".concat(emoji, " [paginate][Debug] ").concat(label));
-    }
-};
-var debugLog = function (componentId, emoji, label, payload) {
-    if (!shouldDebugComponent(componentId)) {
-        return;
-    }
-    // Normalize componentId for consistent logging
-    var normalizedId = normalizeComponentId(componentId);
-    var basePayload = { componentId: normalizedId };
-    // If payload has its own componentId, normalize it too
-    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-        var payloadObj = payload;
-        var normalizedPayload = __assign({}, payloadObj);
-        if (normalizedPayload.componentId && typeof normalizedPayload.componentId === 'string') {
-            normalizedPayload.componentId = normalizeComponentId(normalizedPayload.componentId);
-        }
-        Object.assign(basePayload, normalizedPayload);
-    }
-    else if (payload !== undefined) {
-        basePayload.value = payload;
-    }
-    logPaginationTrace(emoji, label, basePayload);
-};
-var debugRunId = 0;
-var lastPaginationInputs = null;
-/**
- * Create a hash of measurement keys and heights for comparison
- */
-function hashMeasurements(measurements) {
-    var entries = Array.from(measurements.entries())
-        .sort(function (_a, _b) {
-        var a = _a[0];
-        var b = _b[0];
-        return a.localeCompare(b);
-    })
-        .map(function (_a) {
-        var key = _a[0], record = _a[1];
-        return "".concat(key, ":").concat(record.height.toFixed(2));
-    })
-        .join('|');
-    return entries;
-}
-/**
- * Check if pagination inputs are identical to last run
- */
-function areInputsIdentical(regionHeightPx, columnCount, requestedPageCount, bucketCount, measurementVersion, measurements) {
-    if (!lastPaginationInputs) {
-        return false;
-    }
-    var measurementKeysHash = hashMeasurements(measurements);
-    return (Math.abs(lastPaginationInputs.regionHeightPx - regionHeightPx) < 0.01 &&
-        lastPaginationInputs.columnCount === columnCount &&
-        lastPaginationInputs.requestedPageCount === requestedPageCount &&
-        lastPaginationInputs.bucketCount === bucketCount &&
-        lastPaginationInputs.measurementVersion === measurementVersion &&
-        lastPaginationInputs.measurementKeysHash === measurementKeysHash);
-}
-var shouldLogPaginationDecisions = function () { return isPaginationDebugEnabled(); };
-var paginationStats = {
-    heightSources: { measured: 0, proportional: 0, estimate: 0 },
-    bottomZoneRejections: 0,
-    splitDecisions: 0,
-    componentsPlaced: 0,
-};
-var logPaginationDecision = function () {
-    var args = [];
-    for (var _i = 0; _i < arguments.length; _i++) {
-        args[_i] = arguments[_i];
-    }
-    if (!shouldLogPaginationDecisions()) {
-        return;
-    }
-    // Extract componentId from payload if present
-    // Format: logPaginationDecision(runId, 'label', { componentId: ..., ... })
-    var shouldLog = true;
-    var normalizedArgs = __spreadArray([], args, true);
-    if (args.length >= 3 && typeof args[2] === 'object' && args[2] !== null) {
-        var payload = args[2];
-        if (payload.componentId) {
-            // Only log if this component is in the debug list
-            shouldLog = shouldDebugComponent(payload.componentId);
-            // Normalize componentId in payload for consistent logging
-            var normalizedPayload = __assign({}, payload);
-            normalizedPayload.componentId = normalizeComponentId(payload.componentId);
-            normalizedArgs = __spreadArray([args[0], args[1], normalizedPayload], args.slice(3), true);
-        }
-    }
-    // For logs without componentId (like 'run-start'), always log if pagination debug is enabled
-    if (!shouldLog) {
-        return;
-    }
-    // eslint-disable-next-line no-console
-    console.debug.apply(console, __spreadArray(['[paginate]'], normalizedArgs, false));
-};
 var isSpellcastingMeasurementKey = function (key) {
     return key.includes('spell-list');
 };
@@ -427,52 +190,6 @@ var findOtherColumnOnSamePage = function (pages, currentKey) {
         }
     }
     return null; // Current region not found
-};
-var createCursor = function (regionKey, maxHeight, initialOffset) {
-    if (initialOffset === void 0) { initialOffset = 0; }
-    return ({
-        regionKey: regionKey,
-        currentOffset: initialOffset,
-        maxHeight: maxHeight,
-    });
-};
-var computeSpan = function (cursor, estimatedHeight) {
-    var span = {
-        top: cursor.currentOffset,
-        bottom: cursor.currentOffset + estimatedHeight,
-        height: estimatedHeight,
-    };
-    return span;
-};
-var fitsInRegion = function (span, cursor, componentId) {
-    // Add safety buffer to account for measurement/rendering micro-differences
-    // Sub-pixel rendering and margin collapse can cause ~10-15px variations
-    var BOTTOM_ZONE_SAFETY_BUFFER_PX = 20;
-    // Check if component + safety buffer fits in region
-    // CSS gap handles spacing between entries, so we only check entry bottom
-    var cursorAfterPlacement = span.bottom;
-    var fits = cursorAfterPlacement <= (cursor.maxHeight - BOTTOM_ZONE_SAFETY_BUFFER_PX);
-    // CRITICAL: Log component-5 fitsInRegion checks
-    if (isPaginationDebugEnabled() && componentId && (componentId === 'component-5' || componentId.includes('component-5'))) {
-        debugLog('component-5', '🔍', 'fitsInRegion-check', {
-            spanTop: span.top,
-            spanBottom: span.bottom,
-            spanHeight: span.height,
-            cursorAfterPlacement: cursorAfterPlacement,
-            cursorMaxHeight: cursor.maxHeight,
-            safetyBuffer: BOTTOM_ZONE_SAFETY_BUFFER_PX,
-            effectiveMaxHeight: cursor.maxHeight - BOTTOM_ZONE_SAFETY_BUFFER_PX,
-            fits: fits,
-            reason: fits ? 'FITS' : 'OVERFLOWS',
-            overflowAmount: cursorAfterPlacement - (cursor.maxHeight - BOTTOM_ZONE_SAFETY_BUFFER_PX),
-        });
-    }
-    return fits;
-};
-var advanceCursor = function (cursor, span) {
-    // Add gap after entry to match CSS flex gap between entries
-    // This ensures pagination accounts for the 12px spacing CSS applies
-    cursor.currentOffset = span.bottom + COMPONENT_VERTICAL_SPACING_PX;
 };
 var detachFromSource = function (entry, key, buckets) {
     if (entry.sourceRegionKey === key) {
@@ -676,7 +393,7 @@ var findBestListSplit = function (entry, cursor, regionHeight, measurements, ada
 export var paginate = function (_a) {
     var _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, _23, _24, _25, _26, _27, _28, _29, _30, _31, _32, _33, _34, _35, _36, _37, _38, _39, _40, _41, _42, _43, _44, _45, _46, _47, _48, _49, _50, _51, _52, _53, _54, _55, _56, _57, _58, _59, _60, _61, _62, _63, _64, _65, _66, _67, _68, _69, _70, _71, _72, _73, _74, _75, _76, _77, _78, _79, _80, _81, _82, _83, _84, _85, _86, _87, _88, _89, _90, _91;
     var buckets = _a.buckets, columnCount = _a.columnCount, regionHeightPx = _a.regionHeightPx, requestedPageCount = _a.requestedPageCount, baseDimensions = _a.baseDimensions, measurementVersion = _a.measurementVersion, measurements = _a.measurements, adapters = _a.adapters, segmentRerouteCache = _a.segmentRerouteCache, previousPlan = _a.previousPlan;
-    var runId = ++debugRunId;
+    var runId = nextDebugRunId();
     var rerouteCache = segmentRerouteCache !== null && segmentRerouteCache !== void 0 ? segmentRerouteCache : new SegmentRerouteCache();
     var plannerDiagnosticsEnabled = isPlannerDebugEnabled();
     // NOTE: regionHeightPx is the measured column height from DOM, which already
@@ -747,14 +464,14 @@ export var paginate = function (_a) {
     }
     // Update last inputs for next comparison
     var measurementKeysHash = hashMeasurements(measurements);
-    lastPaginationInputs = {
+    recordLastPaginationInputs({
         regionHeightPx: regionHeightPx,
         columnCount: columnCount,
         requestedPageCount: requestedPageCount,
         bucketCount: bucketCount,
         measurementVersion: measurementVersion,
         measurementKeysHash: measurementKeysHash,
-    };
+    });
     // Detect regionHeight changes (feedback loop indicator)
     var regionHeightChanged = lastRegionHeightPx !== null && Math.abs(lastRegionHeightPx - regionHeightPx) > 1;
     var normalizedHeightChanged = lastNormalizedHeight !== null && Math.abs(lastNormalizedHeight - regionHeightPx) > 1;
@@ -769,7 +486,7 @@ export var paginate = function (_a) {
         });
     }
     // Component-5 region height change logging
-    if (isPaginationDebugEnabled() && shouldDebugComponent('component-5')) {
+    if (isPaginationDebugEnabled() && isComponentDebugEnabled('component-5')) {
         debugLog('component-5', '📏', 'region-height-at-start', {
             runId: runId,
             regionHeightPx: regionHeightPx,
@@ -784,7 +501,7 @@ export var paginate = function (_a) {
         requestedPageCount: requestedPageCount,
         bucketCount: buckets.size,
         measurementVersion: measurementVersion !== null && measurementVersion !== void 0 ? measurementVersion : 'unknown',
-        debugComponents: Array.from(DEBUG_COMPONENT_IDS),
+        debugComponents: getDebugComponentIds(),
         heightChanges: regionHeightChanged ? {
             previousRaw: lastRegionHeightPx,
             currentRaw: regionHeightPx,
@@ -879,7 +596,7 @@ export var paginate = function (_a) {
             var key = column.key;
             // Phase 0.5: Region Processing Start Tracking
             if (isPaginationDebugEnabled() && key === '2:2') {
-                var debugEntries = column.entries.filter(function (e) { return shouldDebugComponent(e.instance.id); });
+                var debugEntries = column.entries.filter(function (e) { return isComponentDebugEnabled(e.instance.id); });
                 debugEntries.forEach(function (debugEntry) {
                     debugLog(normalizeComponentId(debugEntry.instance.id), '🚀', 'component-trace-region-processing-start', {
                         componentId: normalizeComponentId(debugEntry.instance.id),
@@ -912,7 +629,7 @@ export var paginate = function (_a) {
             }
             // Phase 1: Entry Source Tracking - pendingQueue
             if (isPaginationDebugEnabled()) {
-                var debugEntries = pendingEntries.filter(function (e) { return shouldDebugComponent(e.instance.id); });
+                var debugEntries = pendingEntries.filter(function (e) { return isComponentDebugEnabled(e.instance.id); });
                 debugEntries.forEach(function (debugEntry) {
                     debugLog(normalizeComponentId(debugEntry.instance.id), '🎯', 'component-trace-pending-queue-entry', {
                         componentId: normalizeComponentId(debugEntry.instance.id),
@@ -940,7 +657,7 @@ export var paginate = function (_a) {
             }
             var homeEntries = ((_c = homeBuckets.get(key)) !== null && _c !== void 0 ? _c : []).filter(function (entry) { return entry.sourceRegionKey !== key; });
             var regionQueue = __spreadArray(__spreadArray([], pendingEntries, true), sourceEntries, true);
-            var debugQueueEntry = regionQueue.find(function (entry) { return shouldDebugComponent(entry.instance.id); });
+            var debugQueueEntry = regionQueue.find(function (entry) { return isComponentDebugEnabled(entry.instance.id); });
             homeEntries.forEach(function (candidate) {
                 if (!regionQueue.includes(candidate)) {
                     regionQueue.push(candidate);
@@ -1126,7 +843,7 @@ export var paginate = function (_a) {
             };
             // Phase 0: Column Entries Initialization Tracking
             if (isPaginationDebugEnabled()) {
-                var debugEntries = column.entries.filter(function (e) { return shouldDebugComponent(e.instance.id); });
+                var debugEntries = column.entries.filter(function (e) { return isComponentDebugEnabled(e.instance.id); });
                 debugEntries.forEach(function (debugEntry) {
                     var sameComponentEntries = column.entries.filter(function (e) { return e.instance.id === debugEntry.instance.id; });
                     debugLog(normalizeComponentId(debugEntry.instance.id), '🏁', 'component-trace-column-entries-init', {
@@ -1355,7 +1072,7 @@ export var paginate = function (_a) {
                                     cursorAdvance: cursor.currentOffset - prevCursorOffset,
                                 });
                             }
-                            else if (isPaginationDebugEnabled() && shouldDebugComponent(peekedEntry.instance.id)) {
+                            else if (isPaginationDebugEnabled() && isComponentDebugEnabled(peekedEntry.instance.id)) {
                                 debugLog(peekedEntry.instance.id, '🔧', 'cursor-advanced-for-skipped-entry', {
                                     runId: runId,
                                     regionKey: key,
@@ -1372,7 +1089,7 @@ export var paginate = function (_a) {
                         // This ensures cursor matches the visual position (CSS gap handles spacing)
                         if (placedSpan.bottom > cursor.currentOffset) {
                             cursor.currentOffset = placedSpan.bottom;
-                            if (isPaginationDebugEnabled() && shouldDebugComponent(peekedEntry.instance.id)) {
+                            if (isPaginationDebugEnabled() && isComponentDebugEnabled(peekedEntry.instance.id)) {
                                 debugLog(peekedEntry.instance.id, '⏭️', 'entry-skipped-cursor-advanced', {
                                     runId: runId,
                                     regionKey: key,
@@ -1384,7 +1101,7 @@ export var paginate = function (_a) {
                                 });
                             }
                         }
-                        else if (isPaginationDebugEnabled() && shouldDebugComponent(peekedEntry.instance.id)) {
+                        else if (isPaginationDebugEnabled() && isComponentDebugEnabled(peekedEntry.instance.id)) {
                             debugLog(peekedEntry.instance.id, '⏭️', 'entry-skipped-already-correctly-placed', {
                                 runId: runId,
                                 regionKey: key,
@@ -1411,7 +1128,7 @@ export var paginate = function (_a) {
                     return "break";
                 }
                 // Phase 1: Entry Source Tracking - regionQueue
-                if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                     debugLog(normalizeComponentId(entry.instance.id), '🎯', 'component-trace-region-queue-entry', {
                         componentId: normalizeComponentId(entry.instance.id),
                         runId: runId,
@@ -1473,7 +1190,7 @@ export var paginate = function (_a) {
                 }
                 detachFromSource(entry, key, processedBuckets);
                 // Phase 1.5: Track entry before conditional check
-                if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                     debugLog(normalizeComponentId(entry.instance.id), '🔍', 'component-trace-before-conditional-check', {
                         componentId: normalizeComponentId(entry.instance.id),
                         runId: runId,
@@ -1538,7 +1255,7 @@ export var paginate = function (_a) {
                     // If span.top is 0, we can't reliably detect overflow
                     var entryTop = actualSpan.top || 0; // Use 0 as fallback, but this is a bug indicator
                     // Phase 2: PlacedEntry Lookup Tracking
-                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                         debugLog(normalizeComponentId(entry.instance.id), '🔍', 'component-trace-placed-entry-lookup', {
                             componentId: normalizeComponentId(entry.instance.id),
                             runId: runId,
@@ -1743,7 +1460,7 @@ export var paginate = function (_a) {
                                 cursorAdvance: cursor.currentOffset - prevCursorOffset,
                             });
                         }
-                        else if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        else if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                             debugLog(entry.instance.id, '🔧', 'cursor-advanced-for-skipped-entry', {
                                 runId: runId,
                                 regionKey: key,
@@ -1758,7 +1475,7 @@ export var paginate = function (_a) {
                     // Search by instance.id AND region to handle cross-column entries correctly
                     // Use entry.instance.id (the entry being processed) not placedEntry.instance.id
                     // Phase 3: ExistingIndex Search Tracking - Before search
-                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                         // Log state BEFORE search
                         var componentBeforeSearch = columnEntries.filter(function (e) { return e.instance.id === entry.instance.id; });
                         debugLog(normalizeComponentId(entry.instance.id), '🔎', 'component-trace-before-existing-index-search', {
@@ -1791,7 +1508,7 @@ export var paginate = function (_a) {
                             ((_b = e.region) === null || _b === void 0 ? void 0 : _b.column) === column.columnNumber;
                     });
                     // Phase 3: ExistingIndex Search Tracking - After search
-                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                         debugLog(normalizeComponentId(entry.instance.id), '🔎', 'component-trace-existing-index-result', {
                             componentId: normalizeComponentId(entry.instance.id),
                             runId: runId,
@@ -1832,7 +1549,7 @@ export var paginate = function (_a) {
                     }
                     if (existingIndex >= 0) {
                         // Phase 4: Update/Add Tracking - Update branch
-                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                             debugLog(normalizeComponentId(entry.instance.id), '✏️', 'component-trace-updating-entry', {
                                 componentId: normalizeComponentId(entry.instance.id),
                                 runId: runId,
@@ -1860,7 +1577,7 @@ export var paginate = function (_a) {
                     }
                     else {
                         // Phase 4: Update/Add Tracking - Add branch
-                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                             debugLog(normalizeComponentId(entry.instance.id), '➕', 'component-trace-adding-entry', {
                                 componentId: normalizeComponentId(entry.instance.id),
                                 runId: runId,
@@ -1903,7 +1620,7 @@ export var paginate = function (_a) {
                         if (existingIndexPath1Add >= 0) {
                             // Update existing entry instead of adding duplicate
                             columnEntries[existingIndexPath1Add] = __assign(__assign({}, columnEntries[existingIndexPath1Add]), { span: entryToAdd.span });
-                            if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                            if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                                 debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path1-add', {
                                     componentId: normalizeComponentId(entry.instance.id),
                                     runId: runId,
@@ -1919,7 +1636,7 @@ export var paginate = function (_a) {
                         }
                     }
                     // Phase 4: Update/Add Tracking - After update/add
-                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                         var componentAfter = columnEntries.filter(function (e) { return e.instance.id === entry.instance.id; });
                         debugLog(normalizeComponentId(entry.instance.id), '📊', 'component-trace-after-update-add', {
                             componentId: normalizeComponentId(entry.instance.id),
@@ -1966,7 +1683,7 @@ export var paginate = function (_a) {
                             });
                         }
                         // Phase 5: Duplication Detection Tracking
-                        if (shouldDebugComponent(entry.instance.id)) {
+                        if (isComponentDebugEnabled(entry.instance.id)) {
                             var componentDuplicates = columnEntries.filter(function (e) { return e.instance.id === entry.instance.id; });
                             if (componentDuplicates.length > 1) {
                                 debugLog(normalizeComponentId(entry.instance.id), '⚠️', 'component-trace-duplicate-detected', {
@@ -2055,7 +1772,7 @@ export var paginate = function (_a) {
                 // Fix 2: Skip entry if already in columnEntries but doesn't match conditional check
                 // This prevents duplicate processing when entry loses span but still exists in columnEntries
                 if (alreadyInColumnEntries && !(entry.span && entry.region && entry.region.page === page.pageNumber && entry.region.column === column.columnNumber)) {
-                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                         debugLog(normalizeComponentId(entry.instance.id), '⏭️', 'component-trace-skipped-already-in-column-entries', {
                             componentId: normalizeComponentId(entry.instance.id),
                             runId: runId,
@@ -2166,7 +1883,7 @@ export var paginate = function (_a) {
                             }
                             : undefined, sourceRegionKey: column.key });
                     // Phase 4.5: New Entry Placement Tracking - Fits path
-                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                         debugLog(normalizeComponentId(entry.instance.id), '✅', 'component-trace-new-entry-fits', {
                             componentId: normalizeComponentId(entry.instance.id),
                             runId: runId,
@@ -2184,7 +1901,7 @@ export var paginate = function (_a) {
                     if (existingIndexPath2 >= 0) {
                         // Update existing entry instead of adding duplicate
                         columnEntries[existingIndexPath2] = __assign(__assign({}, columnEntries[existingIndexPath2]), { span: committedEntry.span, region: committedEntry.region });
-                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                             debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path2', {
                                 componentId: normalizeComponentId(entry.instance.id),
                                 runId: runId,
@@ -2369,7 +2086,7 @@ export var paginate = function (_a) {
                     }
                     var pendingQueue = getPendingQueue(targetKey);
                     if (regionQueue.length > 0) {
-                        var debugEntry = regionQueue.find(function (queued) { return shouldDebugComponent(queued.instance.id); });
+                        var debugEntry = regionQueue.find(function (queued) { return isComponentDebugEnabled(queued.instance.id); });
                         if (debugEntry) {
                             debugLog(debugEntry.instance.id, '🚚', 'move-remaining-to-region', {
                                 runId: runId,
@@ -2383,7 +2100,7 @@ export var paginate = function (_a) {
                     if (regionQueue.length > 0) {
                         pendingQueue.push.apply(pendingQueue, regionQueue);
                         regionQueue.length = 0;
-                        var debugEntry = pendingQueue.find(function (queued) { return shouldDebugComponent(queued.instance.id); });
+                        var debugEntry = pendingQueue.find(function (queued) { return isComponentDebugEnabled(queued.instance.id); });
                         if (debugEntry) {
                             debugLog(debugEntry.instance.id, '📦', 'moved-remaining-enqueued', {
                                 runId: runId,
@@ -2604,7 +2321,7 @@ export var paginate = function (_a) {
                                 }
                                 : undefined, sourceRegionKey: column.key });
                         // Phase 4.6: Split Entry Placement Tracking - Overflow path 1
-                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                             debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-split-entry-overflow-1', {
                                 componentId: normalizeComponentId(entry.instance.id),
                                 runId: runId,
@@ -2622,7 +2339,7 @@ export var paginate = function (_a) {
                         if (existingIndexPath3 >= 0) {
                             // Update existing entry instead of adding duplicate
                             columnEntries[existingIndexPath3] = __assign(__assign({}, columnEntries[existingIndexPath3]), { span: committedEntry.span, region: committedEntry.region });
-                            if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                            if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                                 debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path3', {
                                     componentId: normalizeComponentId(entry.instance.id),
                                     runId: runId,
@@ -2660,7 +2377,7 @@ export var paginate = function (_a) {
                     var updatedNextRegion = findNextRegion(pages, key);
                     if (!updatedNextRegion) {
                         // Phase 4.10: Fallback Entry Placement Tracking - No next region
-                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                             debugLog(normalizeComponentId(entry.instance.id), '⚠️', 'component-trace-fallback-no-next-region', {
                                 componentId: normalizeComponentId(entry.instance.id),
                                 runId: runId,
@@ -2701,7 +2418,7 @@ export var paginate = function (_a) {
                                 }
                                 : undefined, sourceRegionKey: column.key });
                         // Phase 4.7: Split Entry Placement Tracking - Overflow path 2
-                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                             debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-split-entry-overflow-2', {
                                 componentId: normalizeComponentId(entry.instance.id),
                                 runId: runId,
@@ -2719,7 +2436,7 @@ export var paginate = function (_a) {
                         if (existingIndexPath4 >= 0) {
                             // Update existing entry instead of adding duplicate
                             columnEntries[existingIndexPath4] = __assign(__assign({}, columnEntries[existingIndexPath4]), { span: committedEntry.span, region: committedEntry.region });
-                            if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                            if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                                 debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path4', {
                                     componentId: normalizeComponentId(entry.instance.id),
                                     runId: runId,
@@ -2843,7 +2560,7 @@ export var paginate = function (_a) {
                     }
                     else {
                         // Phase 4.8: Empty Split Placement Tracking
-                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                             debugLog(normalizeComponentId(entry.instance.id), '📦', 'component-trace-empty-split-place', {
                                 componentId: normalizeComponentId(entry.instance.id),
                                 runId: runId,
@@ -2865,7 +2582,7 @@ export var paginate = function (_a) {
                         if (existingIndexPath5 >= 0) {
                             // Update existing entry instead of adding duplicate
                             columnEntries[existingIndexPath5] = __assign(__assign({}, columnEntries[existingIndexPath5]), { span: fallbackEntry.span, region: fallbackEntry.region });
-                            if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                            if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                                 debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path5', {
                                     componentId: normalizeComponentId(entry.instance.id),
                                     runId: runId,
@@ -2902,7 +2619,7 @@ export var paginate = function (_a) {
                         totalCount: placedContent.totalCount,
                     }, sourceRegionKey: column.key });
                 // Phase 4.9: Placed Entry from Split Tracking
-                if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                     debugLog(normalizeComponentId(entry.instance.id), '📋', 'component-trace-placed-entry-from-split', {
                         componentId: normalizeComponentId(entry.instance.id),
                         runId: runId,
@@ -2947,7 +2664,7 @@ export var paginate = function (_a) {
                 if (existingIndexPath6 >= 0) {
                     // Update existing entry instead of adding duplicate
                     columnEntries[existingIndexPath6] = __assign(__assign({}, columnEntries[existingIndexPath6]), { span: placedEntry.span, region: placedEntry.region });
-                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                         debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path6', {
                             componentId: normalizeComponentId(entry.instance.id),
                             runId: runId,
@@ -3036,7 +2753,7 @@ export var paginate = function (_a) {
             }
             // Phase 6: Column Commit Tracking
             if (isPaginationDebugEnabled()) {
-                var debugEntries = columnEntries.filter(function (e) { return shouldDebugComponent(e.instance.id); });
+                var debugEntries = columnEntries.filter(function (e) { return isComponentDebugEnabled(e.instance.id); });
                 debugEntries.forEach(function (debugEntry) {
                     var sameComponentEntries = columnEntries.filter(function (e) { return e.instance.id === debugEntry.instance.id; });
                     debugLog(normalizeComponentId(debugEntry.instance.id), '💾', 'component-trace-column-commit', {
@@ -3146,7 +2863,7 @@ export var paginate = function (_a) {
             page.columns.forEach(function (column) {
                 column.entries.forEach(function (entry) {
                     var _a, _b, _c, _d, _e, _f, _g, _h;
-                    if (shouldDebugComponent(entry.instance.id)) {
+                    if (isComponentDebugEnabled(entry.instance.id)) {
                         debugPlacements_1.push({
                             componentId: entry.instance.id,
                             measurementKey: entry.measurementKey,

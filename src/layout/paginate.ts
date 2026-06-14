@@ -14,6 +14,30 @@ import type {
 import type { CanvasAdapters } from '../types/adapters.types';
 import { toRegionContent } from './utils-generic';
 import {
+    advanceCursor,
+    computeSpan,
+    createCursor,
+    fitsInRegion,
+} from './paginate/cursor';
+import {
+    areInputsIdentical,
+    debugLog,
+    getDebugComponentIds,
+    hashMeasurements,
+    isComponentDebugEnabled,
+    isCursorDebugEnabled,
+    isPaginationDebugEnabled,
+    isPlannerDebugEnabled,
+    logPaginationDecision,
+    logPaginationTrace,
+    nextDebugRunId,
+    normalizeComponentId,
+    paginationStats,
+    recordLastPaginationInputs,
+    shouldLogPaginationDecisions,
+} from './paginate/debug';
+export { isComponentDebugEnabled, normalizeComponentId } from './paginate/debug';
+import {
     COMPONENT_VERTICAL_SPACING_PX,
     LIST_ITEM_SPACING_PX,
     COLUMN_PADDING_PX,
@@ -90,286 +114,6 @@ const ENTRY_REMOVAL_OVERFLOW_THRESHOLD_PX = 5;
 
 // Significant region height change threshold: Reset already-rerouted flag if region height changes by more than this
 const SIGNIFICANT_REGION_HEIGHT_CHANGE_PX = 10;
-
-// No default debug components - use CLI/env vars to specify: npm run canvas-debug -- component-1 component-2
-const DEFAULT_DEBUG_COMPONENT_IDS: string[] = [];
-
-const parseComponentIdList = (value: unknown): string[] => {
-    if (Array.isArray(value)) {
-        return value
-            .map((item) => (typeof item === 'string' ? item.trim() : ''))
-            .filter((item): item is string => item.length > 0);
-    }
-
-    if (typeof value === 'string') {
-        return value
-            .split(/[, ]+/)
-            .map((item) => item.trim())
-            .filter((item) => item.length > 0);
-    }
-
-    if (value && typeof value === 'object') {
-        return parseComponentIdList((value as { ids?: unknown }).ids);
-    }
-
-    return [];
-};
-
-const readComponentIdsFromEnv = (): string[] => {
-    // React Scripts replaces process.env.REACT_APP_* at build time
-    // Access directly - webpack will replace with literal string or undefined
-    const reactAppValue = process.env.REACT_APP_CANVAS_DEBUG_COMPONENTS;
-    if (reactAppValue) {
-        return parseComponentIdList(reactAppValue);
-    }
-    // Fallback to non-prefixed var (for Node.js/server-side)
-    const envValue = typeof process !== 'undefined' && process.env ? process.env.CANVAS_DEBUG_COMPONENTS : undefined;
-    return parseComponentIdList(envValue);
-};
-
-const readComponentIdsFromGlobal = (): string[] => {
-    if (typeof globalThis === 'undefined') {
-        return [];
-    }
-    const globalValue = (globalThis as { __CANVAS_DEBUG_COMPONENTS?: unknown }).__CANVAS_DEBUG_COMPONENTS;
-    return parseComponentIdList(globalValue);
-};
-
-const readComponentIdsFromStorage = (): string[] => {
-    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
-        return [];
-    }
-    try {
-        const stored = window.localStorage.getItem('canvas-debug:components');
-        return parseComponentIdList(stored);
-    } catch {
-        return [];
-    }
-};
-
-const buildDebugComponentSet = (): Set<string> => {
-    const ids = new Set<string>();
-    DEFAULT_DEBUG_COMPONENT_IDS.forEach((id) => ids.add(id));
-    readComponentIdsFromEnv().forEach((id) => ids.add(id));
-    readComponentIdsFromGlobal().forEach((id) => ids.add(id));
-    readComponentIdsFromStorage().forEach((id) => ids.add(id));
-    return ids;
-};
-
-const DEBUG_COMPONENT_IDS = buildDebugComponentSet();
-
-/**
- * Normalize component IDs to zero-padded format for consistent logging.
- * Examples: "component-0" -> "component-00", "component-1" -> "component-01", "component-10" -> "component-10"
- * 
- * @export
- * Exported for use in measurement.tsx and other modules
- */
-export const normalizeComponentId = (componentId: string): string => {
-    const match = componentId.match(/^component-(\d+)$/);
-    if (match) {
-        const num = parseInt(match[1], 10);
-        return `component-${num.toString().padStart(2, '0')}`;
-    }
-    return componentId; // Return as-is if not in expected format
-};
-
-/**
- * Check if a component ID matches a normalized debug component ID.
- * This allows checking against zero-padded IDs (e.g., "component-01") even if the actual ID is "component-1".
- */
-const matchesDebugComponent = (componentId: string, debugId: string): boolean => {
-    const normalized = normalizeComponentId(componentId);
-    const normalizedDebug = normalizeComponentId(debugId);
-    return normalized === normalizedDebug;
-};
-
-const isPaginationDebugEnabled = (): boolean => isDebugEnabled('paginate-spellcasting');
-const isPlannerDebugEnabled = (): boolean => isDebugEnabled('planner-spellcasting');
-const isCursorDebugEnabled = (): boolean => isDebugEnabled('cursor');
-// Only debug components explicitly specified via CLI/env vars
-// If "*" is in the set, debug all components; otherwise check if component ID is in set
-const shouldDebugComponent = (componentId: string): boolean =>
-    DEBUG_COMPONENT_IDS.has('*') || DEBUG_COMPONENT_IDS.has(componentId);
-
-// Export for use in other modules (e.g., StatblockPage.tsx)
-export const isComponentDebugEnabled = (componentId: string): boolean =>
-    shouldDebugComponent(componentId);
-
-// Log debug configuration on module load (once per page load)
-// Check in browser context (webpack replaces process.env.REACT_APP_* at build time)
-if (typeof window !== 'undefined') {
-    const enabledFlags: string[] = [];
-    if (isPaginationDebugEnabled()) enabledFlags.push('paginate');
-    if (isPlannerDebugEnabled()) enabledFlags.push('planner');
-    if (isCursorDebugEnabled()) enabledFlags.push('cursor');
-    if (isDebugEnabled('layout-plan-diff')) enabledFlags.push('plan-diff');
-    if (isDebugEnabled('measurement-spellcasting')) enabledFlags.push('measurement');
-    if (isDebugEnabled('layout-dirty')) enabledFlags.push('layout');
-    if (isDebugEnabled('measure-first')) enabledFlags.push('measure-first');
-
-    // Always log debug configuration in browser (removed conditional to ensure visibility)
-    // eslint-disable-next-line no-console
-    console.log('🎯 [Canvas Debug] Active configuration:', {
-        componentIds: Array.from(DEBUG_COMPONENT_IDS),
-        wildcardEnabled: DEBUG_COMPONENT_IDS.has('*'),
-        enabledFlags: enabledFlags.length > 0 ? enabledFlags : ['none'],
-        source: {
-            env: readComponentIdsFromEnv().length > 0 ? 'env' : null,
-            global: readComponentIdsFromGlobal().length > 0 ? 'global' : null,
-            storage: readComponentIdsFromStorage().length > 0 ? 'storage' : null,
-            default: DEFAULT_DEBUG_COMPONENT_IDS.length > 0 ? 'default' : null,
-        },
-        envVars: {
-            // React Scripts replaces process.env.REACT_APP_* at build time
-            REACT_APP_CANVAS_DEBUG_COMPONENTS: process.env.REACT_APP_CANVAS_DEBUG_COMPONENTS || 'not set',
-            REACT_APP_CANVAS_DEBUG_PAGINATE: process.env.REACT_APP_CANVAS_DEBUG_PAGINATE || 'not set',
-            REACT_APP_CANVAS_DEBUG_PLANNER: process.env.REACT_APP_CANVAS_DEBUG_PLANNER || 'not set',
-        },
-        diagnostic: {
-            DEBUG_COMPONENT_IDS_size: DEBUG_COMPONENT_IDS.size,
-            enabledFlags_length: enabledFlags.length,
-            NODE_ENV: typeof process !== 'undefined' ? process.env.NODE_ENV : 'browser',
-        },
-    });
-}
-
-const logPaginationTrace = (emoji: string, label: string, payload?: unknown) => {
-    if (!isPaginationDebugEnabled()) {
-        return;
-    }
-
-    if (typeof payload !== 'undefined') {
-        console.log(`${emoji} [paginate][Debug] ${label}`, payload);
-    } else {
-        console.log(`${emoji} [paginate][Debug] ${label}`);
-    }
-};
-
-const debugLog = (componentId: string, emoji: string, label: string, payload?: unknown) => {
-    if (!shouldDebugComponent(componentId)) {
-        return;
-    }
-
-    // Normalize componentId for consistent logging
-    const normalizedId = normalizeComponentId(componentId);
-    const basePayload: Record<string, unknown> = { componentId: normalizedId };
-
-    // If payload has its own componentId, normalize it too
-    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-        const payloadObj = payload as Record<string, unknown>;
-        const normalizedPayload = { ...payloadObj };
-        if (normalizedPayload.componentId && typeof normalizedPayload.componentId === 'string') {
-            normalizedPayload.componentId = normalizeComponentId(normalizedPayload.componentId);
-        }
-        Object.assign(basePayload, normalizedPayload);
-    } else if (payload !== undefined) {
-        basePayload.value = payload;
-    }
-
-    logPaginationTrace(emoji, label, basePayload);
-};
-
-let debugRunId = 0;
-
-// Track last pagination inputs to detect duplicate runs
-interface LastPaginationInputs {
-    regionHeightPx: number;
-    columnCount: number;
-    requestedPageCount: number;
-    bucketCount: number;
-    measurementVersion: number | undefined;
-    measurementKeysHash: string; // Hash of measurement keys and heights
-}
-
-let lastPaginationInputs: LastPaginationInputs | null = null;
-
-/**
- * Create a hash of measurement keys and heights for comparison
- */
-function hashMeasurements(measurements: Map<MeasurementKey, MeasurementRecord>): string {
-    const entries = Array.from(measurements.entries())
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([key, record]) => `${key}:${record.height.toFixed(2)}`)
-        .join('|');
-    return entries;
-}
-
-/**
- * Check if pagination inputs are identical to last run
- */
-function areInputsIdentical(
-    regionHeightPx: number,
-    columnCount: number,
-    requestedPageCount: number,
-    bucketCount: number,
-    measurementVersion: number | undefined,
-    measurements: Map<MeasurementKey, MeasurementRecord>
-): boolean {
-    if (!lastPaginationInputs) {
-        return false;
-    }
-
-    const measurementKeysHash = hashMeasurements(measurements);
-
-    return (
-        Math.abs(lastPaginationInputs.regionHeightPx - regionHeightPx) < 0.01 &&
-        lastPaginationInputs.columnCount === columnCount &&
-        lastPaginationInputs.requestedPageCount === requestedPageCount &&
-        lastPaginationInputs.bucketCount === bucketCount &&
-        lastPaginationInputs.measurementVersion === measurementVersion &&
-        lastPaginationInputs.measurementKeysHash === measurementKeysHash
-    );
-}
-
-const shouldLogPaginationDecisions = (): boolean => isPaginationDebugEnabled();
-
-// Track statistics for optimization analysis
-interface PaginationStats {
-    heightSources: { measured: number; proportional: number; estimate: number };
-    bottomZoneRejections: number;
-    splitDecisions: number;
-    componentsPlaced: number;
-}
-
-const paginationStats: PaginationStats = {
-    heightSources: { measured: 0, proportional: 0, estimate: 0 },
-    bottomZoneRejections: 0,
-    splitDecisions: 0,
-    componentsPlaced: 0,
-};
-
-const logPaginationDecision = (...args: unknown[]) => {
-    if (!shouldLogPaginationDecisions()) {
-        return;
-    }
-
-    // Extract componentId from payload if present
-    // Format: logPaginationDecision(runId, 'label', { componentId: ..., ... })
-    let shouldLog = true;
-    let normalizedArgs = [...args];
-
-    if (args.length >= 3 && typeof args[2] === 'object' && args[2] !== null) {
-        const payload = args[2] as { componentId?: string;[key: string]: unknown };
-        if (payload.componentId) {
-            // Only log if this component is in the debug list
-            shouldLog = shouldDebugComponent(payload.componentId);
-
-            // Normalize componentId in payload for consistent logging
-            const normalizedPayload = { ...payload };
-            normalizedPayload.componentId = normalizeComponentId(payload.componentId);
-            normalizedArgs = [args[0], args[1], normalizedPayload, ...args.slice(3)];
-        }
-    }
-    // For logs without componentId (like 'run-start'), always log if pagination debug is enabled
-
-    if (!shouldLog) {
-        return;
-    }
-
-    // eslint-disable-next-line no-console
-    console.debug('[paginate]', ...normalizedArgs);
-};
 
 const isSpellcastingMeasurementKey = (key: string): boolean =>
     key.includes('spell-list');
@@ -519,57 +263,6 @@ const findOtherColumnOnSamePage = (pages: PageLayout[], currentKey: string): Reg
         }
     }
     return null; // Current region not found
-};
-
-const createCursor = (regionKey: string, maxHeight: number, initialOffset: number = 0): RegionCursor => ({
-    regionKey,
-    currentOffset: initialOffset,
-    maxHeight,
-});
-
-const computeSpan = (cursor: RegionCursor, estimatedHeight: number): RegionSpan => {
-    const span: RegionSpan = {
-        top: cursor.currentOffset,
-        bottom: cursor.currentOffset + estimatedHeight,
-        height: estimatedHeight,
-    };
-
-    return span;
-};
-
-const fitsInRegion = (span: RegionSpan, cursor: RegionCursor, componentId?: string): boolean => {
-    // Add safety buffer to account for measurement/rendering micro-differences
-    // Sub-pixel rendering and margin collapse can cause ~10-15px variations
-    const BOTTOM_ZONE_SAFETY_BUFFER_PX = 20;
-
-    // Check if component + safety buffer fits in region
-    // CSS gap handles spacing between entries, so we only check entry bottom
-    const cursorAfterPlacement = span.bottom;
-    const fits = cursorAfterPlacement <= (cursor.maxHeight - BOTTOM_ZONE_SAFETY_BUFFER_PX);
-
-    // CRITICAL: Log component-5 fitsInRegion checks
-    if (isPaginationDebugEnabled() && componentId && (componentId === 'component-5' || componentId.includes('component-5'))) {
-        debugLog('component-5', '🔍', 'fitsInRegion-check', {
-            spanTop: span.top,
-            spanBottom: span.bottom,
-            spanHeight: span.height,
-            cursorAfterPlacement,
-            cursorMaxHeight: cursor.maxHeight,
-            safetyBuffer: BOTTOM_ZONE_SAFETY_BUFFER_PX,
-            effectiveMaxHeight: cursor.maxHeight - BOTTOM_ZONE_SAFETY_BUFFER_PX,
-            fits,
-            reason: fits ? 'FITS' : 'OVERFLOWS',
-            overflowAmount: cursorAfterPlacement - (cursor.maxHeight - BOTTOM_ZONE_SAFETY_BUFFER_PX),
-        });
-    }
-
-    return fits;
-};
-
-const advanceCursor = (cursor: RegionCursor, span: RegionSpan) => {
-    // Add gap after entry to match CSS flex gap between entries
-    // This ensures pagination accounts for the 12px spacing CSS applies
-    cursor.currentOffset = span.bottom + COMPONENT_VERTICAL_SPACING_PX;
 };
 
 const detachFromSource = (entry: CanvasLayoutEntry, key: string, buckets: Map<string, CanvasLayoutEntry[]>) => {
@@ -862,7 +555,7 @@ export const paginate = ({
     segmentRerouteCache,
     previousPlan,
 }: PaginateArgs): LayoutPlan => {
-    const runId = ++debugRunId;
+    const runId = nextDebugRunId();
     const rerouteCache = segmentRerouteCache ?? new SegmentRerouteCache();
     const plannerDiagnosticsEnabled = isPlannerDebugEnabled();
 
@@ -951,14 +644,14 @@ export const paginate = ({
 
     // Update last inputs for next comparison
     const measurementKeysHash = hashMeasurements(measurements);
-    lastPaginationInputs = {
+    recordLastPaginationInputs({
         regionHeightPx,
         columnCount,
         requestedPageCount,
         bucketCount,
         measurementVersion,
         measurementKeysHash,
-    };
+    });
 
     // Detect regionHeight changes (feedback loop indicator)
     const regionHeightChanged = lastRegionHeightPx !== null && Math.abs(lastRegionHeightPx - regionHeightPx) > 1;
@@ -976,7 +669,7 @@ export const paginate = ({
     }
 
     // Component-5 region height change logging
-    if (isPaginationDebugEnabled() && shouldDebugComponent('component-5')) {
+    if (isPaginationDebugEnabled() && isComponentDebugEnabled('component-5')) {
         debugLog('component-5', '📏', 'region-height-at-start', {
             runId,
             regionHeightPx,
@@ -992,7 +685,7 @@ export const paginate = ({
         requestedPageCount,
         bucketCount: buckets.size,
         measurementVersion: measurementVersion ?? 'unknown',
-        debugComponents: Array.from(DEBUG_COMPONENT_IDS),
+        debugComponents: getDebugComponentIds(),
         heightChanges: regionHeightChanged ? {
             previousRaw: lastRegionHeightPx,
             currentRaw: regionHeightPx,
@@ -1094,7 +787,7 @@ export const paginate = ({
 
             // Phase 0.5: Region Processing Start Tracking
             if (isPaginationDebugEnabled() && key === '2:2') {
-                const debugEntries = column.entries.filter(e => shouldDebugComponent(e.instance.id));
+                const debugEntries = column.entries.filter(e => isComponentDebugEnabled(e.instance.id));
                 debugEntries.forEach(debugEntry => {
                     debugLog(normalizeComponentId(debugEntry.instance.id), '🚀', 'component-trace-region-processing-start', {
                         componentId: normalizeComponentId(debugEntry.instance.id),
@@ -1129,7 +822,7 @@ export const paginate = ({
 
             // Phase 1: Entry Source Tracking - pendingQueue
             if (isPaginationDebugEnabled()) {
-                const debugEntries = pendingEntries.filter(e => shouldDebugComponent(e.instance.id));
+                const debugEntries = pendingEntries.filter(e => isComponentDebugEnabled(e.instance.id));
                 debugEntries.forEach(debugEntry => {
                     debugLog(normalizeComponentId(debugEntry.instance.id), '🎯', 'component-trace-pending-queue-entry', {
                         componentId: normalizeComponentId(debugEntry.instance.id),
@@ -1155,7 +848,7 @@ export const paginate = ({
 
             const homeEntries = (homeBuckets.get(key) ?? []).filter((entry) => entry.sourceRegionKey !== key);
             const regionQueue: CanvasLayoutEntry[] = [...pendingEntries, ...sourceEntries];
-            const debugQueueEntry = regionQueue.find((entry) => shouldDebugComponent(entry.instance.id));
+            const debugQueueEntry = regionQueue.find((entry) => isComponentDebugEnabled(entry.instance.id));
 
             homeEntries.forEach((candidate) => {
                 if (!regionQueue.includes(candidate)) {
@@ -1355,7 +1048,7 @@ export const paginate = ({
 
             // Phase 0: Column Entries Initialization Tracking
             if (isPaginationDebugEnabled()) {
-                const debugEntries = column.entries.filter(e => shouldDebugComponent(e.instance.id));
+                const debugEntries = column.entries.filter(e => isComponentDebugEnabled(e.instance.id));
                 debugEntries.forEach(debugEntry => {
                     const sameComponentEntries = column.entries.filter(e => e.instance.id === debugEntry.instance.id);
                     debugLog(normalizeComponentId(debugEntry.instance.id), '🏁', 'component-trace-column-entries-init', {
@@ -1593,7 +1286,7 @@ export const paginate = ({
                                     cursorAfter: cursor.currentOffset,
                                     cursorAdvance: cursor.currentOffset - prevCursorOffset,
                                 });
-                            } else if (isPaginationDebugEnabled() && shouldDebugComponent(peekedEntry.instance.id)) {
+                            } else if (isPaginationDebugEnabled() && isComponentDebugEnabled(peekedEntry.instance.id)) {
                                 debugLog(peekedEntry.instance.id, '🔧', 'cursor-advanced-for-skipped-entry', {
                                     runId,
                                     regionKey: key,
@@ -1611,7 +1304,7 @@ export const paginate = ({
                         // This ensures cursor matches the visual position (CSS gap handles spacing)
                         if (placedSpan.bottom > cursor.currentOffset) {
                             cursor.currentOffset = placedSpan.bottom;
-                            if (isPaginationDebugEnabled() && shouldDebugComponent(peekedEntry.instance.id)) {
+                            if (isPaginationDebugEnabled() && isComponentDebugEnabled(peekedEntry.instance.id)) {
                                 debugLog(peekedEntry.instance.id, '⏭️', 'entry-skipped-cursor-advanced', {
                                     runId,
                                     regionKey: key,
@@ -1622,7 +1315,7 @@ export const paginate = ({
                                     reason: 'Entry skipped but cursor advanced to maintain position consistency',
                                 });
                             }
-                        } else if (isPaginationDebugEnabled() && shouldDebugComponent(peekedEntry.instance.id)) {
+                        } else if (isPaginationDebugEnabled() && isComponentDebugEnabled(peekedEntry.instance.id)) {
                             debugLog(peekedEntry.instance.id, '⏭️', 'entry-skipped-already-correctly-placed', {
                                 runId,
                                 regionKey: key,
@@ -1651,7 +1344,7 @@ export const paginate = ({
                 }
 
                 // Phase 1: Entry Source Tracking - regionQueue
-                if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                     debugLog(normalizeComponentId(entry.instance.id), '🎯', 'component-trace-region-queue-entry', {
                         componentId: normalizeComponentId(entry.instance.id),
                         runId,
@@ -1719,7 +1412,7 @@ export const paginate = ({
                 detachFromSource(entry, key, processedBuckets);
 
                 // Phase 1.5: Track entry before conditional check
-                if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                     debugLog(normalizeComponentId(entry.instance.id), '🔍', 'component-trace-before-conditional-check', {
                         componentId: normalizeComponentId(entry.instance.id),
                         runId,
@@ -1792,7 +1485,7 @@ export const paginate = ({
                     const entryTop = actualSpan.top || 0; // Use 0 as fallback, but this is a bug indicator
 
                     // Phase 2: PlacedEntry Lookup Tracking
-                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                         debugLog(normalizeComponentId(entry.instance.id), '🔍', 'component-trace-placed-entry-lookup', {
                             componentId: normalizeComponentId(entry.instance.id),
                             runId,
@@ -2006,7 +1699,7 @@ export const paginate = ({
                                 cursorAfter: cursor.currentOffset,
                                 cursorAdvance: cursor.currentOffset - prevCursorOffset,
                             });
-                        } else if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        } else if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                             debugLog(entry.instance.id, '🔧', 'cursor-advanced-for-skipped-entry', {
                                 runId,
                                 regionKey: key,
@@ -2023,7 +1716,7 @@ export const paginate = ({
                     // Use entry.instance.id (the entry being processed) not placedEntry.instance.id
 
                     // Phase 3: ExistingIndex Search Tracking - Before search
-                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                         // Log state BEFORE search
                         const componentBeforeSearch = columnEntries.filter(e => e.instance.id === entry.instance.id);
                         debugLog(normalizeComponentId(entry.instance.id), '🔎', 'component-trace-before-existing-index-search', {
@@ -2054,7 +1747,7 @@ export const paginate = ({
                     );
 
                     // Phase 3: ExistingIndex Search Tracking - After search
-                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                         debugLog(normalizeComponentId(entry.instance.id), '🔎', 'component-trace-existing-index-result', {
                             componentId: normalizeComponentId(entry.instance.id),
                             runId,
@@ -2089,7 +1782,7 @@ export const paginate = ({
 
                     if (existingIndex >= 0) {
                         // Phase 4: Update/Add Tracking - Update branch
-                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                             debugLog(normalizeComponentId(entry.instance.id), '✏️', 'component-trace-updating-entry', {
                                 componentId: normalizeComponentId(entry.instance.id),
                                 runId,
@@ -2120,7 +1813,7 @@ export const paginate = ({
                         };
                     } else {
                         // Phase 4: Update/Add Tracking - Add branch
-                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                             debugLog(normalizeComponentId(entry.instance.id), '➕', 'component-trace-adding-entry', {
                                 componentId: normalizeComponentId(entry.instance.id),
                                 runId,
@@ -2166,7 +1859,7 @@ export const paginate = ({
                                 ...columnEntries[existingIndexPath1Add],
                                 span: entryToAdd.span,
                             };
-                            if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                            if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                                 debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path1-add', {
                                     componentId: normalizeComponentId(entry.instance.id),
                                     runId,
@@ -2182,7 +1875,7 @@ export const paginate = ({
                     }
 
                     // Phase 4: Update/Add Tracking - After update/add
-                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                         const componentAfter = columnEntries.filter(e => e.instance.id === entry.instance.id);
                         debugLog(normalizeComponentId(entry.instance.id), '📊', 'component-trace-after-update-add', {
                             componentId: normalizeComponentId(entry.instance.id),
@@ -2226,7 +1919,7 @@ export const paginate = ({
                         }
 
                         // Phase 5: Duplication Detection Tracking
-                        if (shouldDebugComponent(entry.instance.id)) {
+                        if (isComponentDebugEnabled(entry.instance.id)) {
                             const componentDuplicates = columnEntries.filter(e => e.instance.id === entry.instance.id);
                             if (componentDuplicates.length > 1) {
                                 debugLog(normalizeComponentId(entry.instance.id), '⚠️', 'component-trace-duplicate-detected', {
@@ -2308,7 +2001,7 @@ export const paginate = ({
                 // Fix 2: Skip entry if already in columnEntries but doesn't match conditional check
                 // This prevents duplicate processing when entry loses span but still exists in columnEntries
                 if (alreadyInColumnEntries && !(entry.span && entry.region && entry.region.page === page.pageNumber && entry.region.column === column.columnNumber)) {
-                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                         debugLog(normalizeComponentId(entry.instance.id), '⏭️', 'component-trace-skipped-already-in-column-entries', {
                             componentId: normalizeComponentId(entry.instance.id),
                             runId,
@@ -2439,7 +2132,7 @@ export const paginate = ({
                     };
 
                     // Phase 4.5: New Entry Placement Tracking - Fits path
-                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                         debugLog(normalizeComponentId(entry.instance.id), '✅', 'component-trace-new-entry-fits', {
                             componentId: normalizeComponentId(entry.instance.id),
                             runId,
@@ -2462,7 +2155,7 @@ export const paginate = ({
                             span: committedEntry.span,
                             region: committedEntry.region,
                         };
-                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                             debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path2', {
                                 componentId: normalizeComponentId(entry.instance.id),
                                 runId,
@@ -2671,7 +2364,7 @@ export const paginate = ({
                     }
                     const pendingQueue = getPendingQueue(targetKey);
                     if (regionQueue.length > 0) {
-                        const debugEntry = regionQueue.find((queued) => shouldDebugComponent(queued.instance.id));
+                        const debugEntry = regionQueue.find((queued) => isComponentDebugEnabled(queued.instance.id));
                         if (debugEntry) {
                             debugLog(debugEntry.instance.id, '🚚', 'move-remaining-to-region', {
                                 runId,
@@ -2685,7 +2378,7 @@ export const paginate = ({
                     if (regionQueue.length > 0) {
                         pendingQueue.push(...regionQueue);
                         regionQueue.length = 0;
-                        const debugEntry = pendingQueue.find((queued) => shouldDebugComponent(queued.instance.id));
+                        const debugEntry = pendingQueue.find((queued) => isComponentDebugEnabled(queued.instance.id));
                         if (debugEntry) {
                             debugLog(debugEntry.instance.id, '📦', 'moved-remaining-enqueued', {
                                 runId,
@@ -2941,7 +2634,7 @@ export const paginate = ({
                         };
 
                         // Phase 4.6: Split Entry Placement Tracking - Overflow path 1
-                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                             debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-split-entry-overflow-1', {
                                 componentId: normalizeComponentId(entry.instance.id),
                                 runId,
@@ -2964,7 +2657,7 @@ export const paginate = ({
                                 span: committedEntry.span,
                                 region: committedEntry.region,
                             };
-                            if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                            if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                                 debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path3', {
                                     componentId: normalizeComponentId(entry.instance.id),
                                     runId,
@@ -3005,7 +2698,7 @@ export const paginate = ({
                     const updatedNextRegion = findNextRegion(pages, key);
                     if (!updatedNextRegion) {
                         // Phase 4.10: Fallback Entry Placement Tracking - No next region
-                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                             debugLog(normalizeComponentId(entry.instance.id), '⚠️', 'component-trace-fallback-no-next-region', {
                                 componentId: normalizeComponentId(entry.instance.id),
                                 runId,
@@ -3057,7 +2750,7 @@ export const paginate = ({
                         };
 
                         // Phase 4.7: Split Entry Placement Tracking - Overflow path 2
-                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                             debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-split-entry-overflow-2', {
                                 componentId: normalizeComponentId(entry.instance.id),
                                 runId,
@@ -3080,7 +2773,7 @@ export const paginate = ({
                                 span: committedEntry.span,
                                 region: committedEntry.region,
                             };
-                            if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                            if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                                 debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path4', {
                                     componentId: normalizeComponentId(entry.instance.id),
                                     runId,
@@ -3217,7 +2910,7 @@ export const paginate = ({
                         routedInRegion.add(`${entry.instance.id}:${rerouteKey}`);
                     } else {
                         // Phase 4.8: Empty Split Placement Tracking
-                        if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                        if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                             debugLog(normalizeComponentId(entry.instance.id), '📦', 'component-trace-empty-split-place', {
                                 componentId: normalizeComponentId(entry.instance.id),
                                 runId,
@@ -3248,7 +2941,7 @@ export const paginate = ({
                                 span: fallbackEntry.span,
                                 region: fallbackEntry.region,
                             };
-                            if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                            if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                                 debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path5', {
                                     componentId: normalizeComponentId(entry.instance.id),
                                     runId,
@@ -3305,7 +2998,7 @@ export const paginate = ({
                 };
 
                 // Phase 4.9: Placed Entry from Split Tracking
-                if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                     debugLog(normalizeComponentId(entry.instance.id), '📋', 'component-trace-placed-entry-from-split', {
                         componentId: normalizeComponentId(entry.instance.id),
                         runId,
@@ -3358,7 +3051,7 @@ export const paginate = ({
                         span: placedEntry.span,
                         region: placedEntry.region,
                     };
-                    if (isPaginationDebugEnabled() && shouldDebugComponent(entry.instance.id)) {
+                    if (isPaginationDebugEnabled() && isComponentDebugEnabled(entry.instance.id)) {
                         debugLog(normalizeComponentId(entry.instance.id), '🔄', 'component-trace-updated-instead-of-duplicate-path6', {
                             componentId: normalizeComponentId(entry.instance.id),
                             runId,
@@ -3477,7 +3170,7 @@ export const paginate = ({
 
             // Phase 6: Column Commit Tracking
             if (isPaginationDebugEnabled()) {
-                const debugEntries = columnEntries.filter(e => shouldDebugComponent(e.instance.id));
+                const debugEntries = columnEntries.filter(e => isComponentDebugEnabled(e.instance.id));
                 debugEntries.forEach(debugEntry => {
                     const sameComponentEntries = columnEntries.filter(e => e.instance.id === debugEntry.instance.id);
                     debugLog(normalizeComponentId(debugEntry.instance.id), '💾', 'component-trace-column-commit', {
@@ -3578,7 +3271,7 @@ export const paginate = ({
         pages.forEach((page) => {
             page.columns.forEach((column) => {
                 column.entries.forEach((entry) => {
-                    if (shouldDebugComponent(entry.instance.id)) {
+                    if (isComponentDebugEnabled(entry.instance.id)) {
                         debugPlacements.push({
                             componentId: entry.instance.id,
                             measurementKey: entry.measurementKey,

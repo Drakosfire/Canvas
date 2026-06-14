@@ -10,6 +10,12 @@
 import { GridConfig, MapLabel, MapEditMode } from '../types/map.types';
 import type { MaskStroke, MaskTool } from '../types/mask.types';
 import { LabelEditInfo } from './LabelLayer';
+/**
+ * Buffer around the Stage to allow drawing outside visible viewport.
+ * Shapes can be drawn into this buffer area, but it's clipped by the container.
+ * Mask export clips to image dimensions regardless.
+ */
+export declare const STAGE_BUFFER = 500;
 export interface MapViewportProps {
     /** Viewport width in pixels */
     width: number;

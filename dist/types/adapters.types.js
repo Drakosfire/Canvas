@@ -21,27 +21,18 @@ function resolvePath(obj, path) {
 }
 export var createDefaultDataResolver = function () { return ({
     resolveDataReference: function (dataSources, dataRef) {
-        if (dataRef.type === 'statblock') {
-            var source = dataSources.find(function (s) { return s.type === 'statblock'; });
-            if (source && typeof source.payload === 'object' && source.payload !== null) {
-                var payload = source.payload;
-                return payload[dataRef.path];
-            }
+        var source = dataRef.sourceId
+            ? dataSources.find(function (s) { return s.id === dataRef.sourceId; })
+            : dataSources.find(function (s) { return s.type === dataRef.type; });
+        if (!source || typeof source.payload !== 'object' || source.payload === null) {
+            return undefined;
         }
-        else if (dataRef.type === 'character') {
-            var source = dataSources.find(function (s) { return s.type === 'character'; });
-            if (source && typeof source.payload === 'object' && source.payload !== null) {
-                var payload = source.payload;
-                // Support nested paths like 'dnd5eData.abilityScores'
-                return resolvePath(payload, dataRef.path);
-            }
+        var payload = source.payload;
+        if (dataRef.type === 'custom' && dataRef.key) {
+            return payload[dataRef.key];
         }
-        else if (dataRef.type === 'custom') {
-            var source = dataSources.find(function (s) { return s.type === 'custom'; });
-            if (source && typeof source.payload === 'object' && source.payload !== null) {
-                var payload = source.payload;
-                return payload[dataRef.key];
-            }
+        if (dataRef.path) {
+            return resolvePath(payload, dataRef.path);
         }
         return undefined;
     },

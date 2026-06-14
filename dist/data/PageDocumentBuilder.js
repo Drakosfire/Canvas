@@ -19,16 +19,17 @@ var __assign = (this && this.__assign) || function () {
  * Build a complete page document from a template and live data
  */
 export function buildPageDocument(options) {
-    var template = options.template, statblockData = options.statblockData, characterData = options.characterData, _a = options.customData, customData = _a === void 0 ? {} : _a, _b = options.projectId, projectId = _b === void 0 ? 'default-project' : _b, _c = options.ownerId, ownerId = _c === void 0 ? 'default-user' : _c;
+    var template = options.template, statblockData = options.statblockData, primaryData = options.primaryData, _a = options.primaryDataSourceType, primaryDataSourceType = _a === void 0 ? 'statblock' : _a, _b = options.primaryDataSourceId, primaryDataSourceId = _b === void 0 ? 'statblock-main' : _b, characterData = options.characterData, _c = options.customData, customData = _c === void 0 ? {} : _c, _d = options.projectId, projectId = _d === void 0 ? 'default-project' : _d, _e = options.ownerId, ownerId = _e === void 0 ? 'default-user' : _e;
+    var resolvedPrimaryData = primaryData !== null && primaryData !== void 0 ? primaryData : statblockData;
     var now = new Date().toISOString();
     // Create data sources
     var dataSources = [];
     // Add statblock data source if provided
-    if (statblockData !== undefined) {
+    if (resolvedPrimaryData !== undefined) {
         dataSources.push({
-            id: 'statblock-main',
-            type: 'statblock',
-            payload: statblockData,
+            id: primaryDataSourceId,
+            type: primaryDataSourceType,
+            payload: resolvedPrimaryData,
             updatedAt: now,
         });
     }
@@ -76,7 +77,7 @@ export function buildPageDocument(options) {
         updatedAt: now,
         history: [],
         metadata: {
-            generatedBy: 'DungeonMind StatBlock Generator',
+            generatedBy: 'DungeonMind Canvas',
             version: '1.0.0',
         },
     };
@@ -84,10 +85,11 @@ export function buildPageDocument(options) {
 /**
  * Update data sources in an existing page document
  */
-export function updatePageDataSources(page, statblockData, characterData, customData) {
+export function updatePageDataSources(page, primaryOrStatblockData, characterData, customData, primaryDataSourceType) {
+    if (primaryDataSourceType === void 0) { primaryDataSourceType = 'statblock'; }
     var updatedSources = page.dataSources.map(function (source) {
-        if (source.type === 'statblock' && statblockData) {
-            return __assign(__assign({}, source), { payload: statblockData, updatedAt: new Date().toISOString() });
+        if (source.type === primaryDataSourceType && primaryOrStatblockData !== undefined) {
+            return __assign(__assign({}, source), { payload: primaryOrStatblockData, updatedAt: new Date().toISOString() });
         }
         if (source.type === 'character' && characterData) {
             return __assign(__assign({}, source), { payload: characterData, updatedAt: new Date().toISOString() });

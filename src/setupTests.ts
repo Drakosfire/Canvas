@@ -7,9 +7,18 @@ import '@testing-library/jest-dom';
 
 export { }; // Make this a module
 
-// Mock ResizeObserver for tests
+// Mock ResizeObserver for tests — invoke callback on observe so measurements fire
 global.ResizeObserver = class ResizeObserver {
-  observe() { }
+  private callback: ResizeObserverCallback;
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+  }
+
+  observe(element: Element) {
+    this.callback([{ target: element } as ResizeObserverEntry], this);
+  }
+
   unobserve() { }
   disconnect() { }
 };
@@ -21,6 +30,14 @@ if (typeof window !== 'undefined') {
   });
 
   window.cancelIdleCallback = window.cancelIdleCallback || ((id: number) => {
+    clearTimeout(id);
+  });
+
+  window.requestAnimationFrame = window.requestAnimationFrame || ((callback: FrameRequestCallback) => {
+    return setTimeout(() => callback(performance.now()), 0) as unknown as number;
+  });
+
+  window.cancelAnimationFrame = window.cancelAnimationFrame || ((id: number) => {
     clearTimeout(id);
   });
 }

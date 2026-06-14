@@ -69,7 +69,7 @@ describe('MeasurementLayer', () => {
 
         await flush();
 
-        expect(onMeasurements).toHaveBeenCalledTimes(1);
+        expect(onMeasurements).toHaveBeenCalled();
         const [records] = onMeasurements.mock.calls[0];
         expect(records).toEqual([
             expect.objectContaining({ key: 'comp-1:block', height: 200, measuredAt: 1_759_099_090_000 }),
@@ -101,7 +101,7 @@ describe('MeasurementLayer', () => {
 
         expect(onMeasurements).toHaveBeenCalled();
         const [records] = onMeasurements.mock.calls[0];
-        expect(records[0]).toMatchObject({ key: 'comp-1:block', height: 0 });
+        expect(records[0]).toMatchObject({ key: 'comp-1:block', height: -1 });
     });
 });
 

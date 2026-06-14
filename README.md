@@ -1,45 +1,65 @@
 # @dungeonmind/canvas
 
-A flexible, template-driven rendering engine for multi-column, multi-page layouts.
-
-## Overview
-
-Canvas is a React-based layout system that provides:
-- Template-based component placement
-- Automatic multi-column pagination with overflow handling
-- Real-time measurement-based layout calculation
-- Component registry system for extensibility
-- Data source abstraction
+A React library for measurement-driven document layouts and Konva-based map canvases.
 
 ## Installation
 
 ```bash
-npm install @dungeonmind/canvas
-# or
-pnpm add @dungeonmind/canvas
+# Within DungeonMind monorepo (workspace)
+pnpm add dungeonmind-canvas@workspace:*
 ```
 
-## Usage
+Peer dependencies for map mode: `konva`, `react-konva`. Layout-only consumers can import from the layout subpath and avoid Konva.
+
+## Imports
 
 ```tsx
-import { CanvasPage, useCanvasLayout, buildPageDocument } from '@dungeonmind/canvas';
+// Layout engine (StatBlockGenerator, character sheets)
+import {
+  CanvasPage,
+  useCanvasLayout,
+  buildPageDocument,
+  createDefaultAdapters,
+} from 'dungeonmind-canvas/layout';
 
-// Build a page document from template and data
+// Map mode (MapGenerator)
+import {
+  MapViewport,
+  useMapCanvas,
+  useMaskDrawing,
+  exportMaskToBase64,
+} from 'dungeonmind-canvas/map';
+
+// Backward-compatible root barrel (includes layout + map)
+import { CanvasPage, MapViewport } from 'dungeonmind-canvas';
+
+// Dev diagnostics (optional)
+import { exposeStateDebugger, diagnosePagination } from 'dungeonmind-canvas/dev';
+```
+
+## Layout Quick Start
+
+```tsx
+import {
+  CanvasPage,
+  useCanvasLayout,
+  buildPageDocument,
+  createDefaultAdapters,
+} from 'dungeonmind-canvas/layout';
+
 const page = buildPageDocument({
   template: myTemplate,
-  dataSources: [
-    { id: 'main', type: 'custom', payload: myData }
-  ]
+  statblockData: myData,
 });
 
-// Use in your component
-function MyCanvas({ page, template }) {
+function MyCanvas({ page, template, registry }) {
   const layout = useCanvasLayout({
     componentInstances: page.componentInstances,
     template,
     dataSources: page.dataSources,
-    componentRegistry: myRegistry,
-    pageVariables: page.pageVariables,
+    componentRegistry: registry,
+    adapters: createDefaultAdapters(),
+    config: { pageVariables: page.pageVariables },
   });
 
   return (
@@ -51,13 +71,29 @@ function MyCanvas({ page, template }) {
 }
 ```
 
+## Map Quick Start
+
+```tsx
+import { MapViewport, DEFAULT_GRID_CONFIG } from 'dungeonmind-canvas/map';
+
+<MapViewport
+  width={800}
+  height={600}
+  baseImageUrl={imageUrl}
+  gridConfig={DEFAULT_GRID_CONFIG}
+  labels={labels}
+  onLabelUpdate={handleLabelUpdate}
+/>
+```
+
+## Architecture
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the layout engine pipeline (measurement → pagination → render).
+
 ## Status
 
-🚧 **This package is currently under active extraction from the DungeonMind LandingPage repository.**
-
-This is a work-in-progress. See `EXTRACTION_PLAN.md` for details.
+See [STATUS.md](STATUS.md) for current health and roadmap.
 
 ## License
 
 MIT
-

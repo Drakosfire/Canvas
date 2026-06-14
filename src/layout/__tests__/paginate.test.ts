@@ -5,7 +5,7 @@ import type { RegionListContent } from '../../types/canvas.types';
 import type { CanvasAdapters } from '../../types/adapters.types';
 import { createDefaultAdapters } from '../../types/adapters.types';
 import { paginate } from '../paginate';
-import { COMPONENT_VERTICAL_SPACING_PX } from '../utils';
+import { COMPONENT_VERTICAL_SPACING_PX, COLUMN_PADDING_PX } from '../utils';
 
 // Generic mock item type for testing
 interface MockItem {
@@ -15,7 +15,7 @@ interface MockItem {
 
 const createInstance = (id: string, overrides: Partial<ComponentInstance> = {}): ComponentInstance => ({
     id,
-    type: 'test-list',
+    type: 'test-block',
     dataRef: { type: 'custom', key: 'testData' },
     layout: { isVisible: true },
     ...overrides,
@@ -215,10 +215,12 @@ describe('paginate', () => {
     it('treats boundary-aligned spans as fitting within the region height', () => {
         const regionHeight = 320;
         const firstEntryHeight = 180;
+        const bottomSafetyBufferPx = 20;
+        const effectiveMaxHeight = regionHeight - (2 * COLUMN_PADDING_PX);
         const first = createEntry('component-3', firstEntryHeight, { orderIndex: 0 });
 
-        const cursorBeforeSecond = firstEntryHeight + COMPONENT_VERTICAL_SPACING_PX;
-        const secondEntryHeight = regionHeight - COMPONENT_VERTICAL_SPACING_PX - cursorBeforeSecond;
+        const cursorAfterFirst = COLUMN_PADDING_PX + firstEntryHeight + COMPONENT_VERTICAL_SPACING_PX;
+        const secondEntryHeight = effectiveMaxHeight - bottomSafetyBufferPx - cursorAfterFirst;
         expect(secondEntryHeight).toBeGreaterThan(0);
 
         const second = createEntry('component-4', secondEntryHeight, { orderIndex: 1 });
@@ -230,7 +232,7 @@ describe('paginate', () => {
         const fittedEntry = firstPageEntries[1];
         expect(fittedEntry.instance.id).toBe('component-4');
         expect(fittedEntry.overflow).toBeFalsy();
-        expect(fittedEntry.span?.bottom).toBeCloseTo(regionHeight - COMPONENT_VERTICAL_SPACING_PX, 5);
+        expect(fittedEntry.span?.bottom).toBeCloseTo(effectiveMaxHeight - bottomSafetyBufferPx, 5);
     });
 
     it('reroutes overflowing home-region components to the sibling column before advancing pages', () => {
@@ -246,7 +248,7 @@ describe('paginate', () => {
         const rerouted = columnTwoEntries[0];
         expect(rerouted.region.column).toBe(2);
         expect(rerouted.region.page).toBe(1);
-        expect(rerouted.span?.top ?? -1).toBe(0);
+        expect(rerouted.span?.top ?? -1).toBe(8);
         expect(rerouted.span?.bottom ?? -1).toBeGreaterThan(0);
         expect(rerouted.sourceRegionKey).toBe('1:2');
     });

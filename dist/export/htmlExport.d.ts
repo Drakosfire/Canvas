@@ -1,7 +1,7 @@
 /**
  * HTML Export Utilities
  *
- * Export statblock canvas to standalone HTML file.
+ * Export rendered canvas pages to a standalone HTML file.
  */
 import type { PageDocument, TemplateConfig } from '../types/canvas.types';
 import type { CanvasAdapters } from '../types/adapters.types';
@@ -10,6 +10,9 @@ interface ExportOptions {
     includeStyles?: boolean;
     includeMetadata?: boolean;
     title?: string;
+    /** CSS selector for the rendered pages container (default: '.pages-content') */
+    contentSelector?: string;
+    generatorName?: string;
 }
 /**
  * Generate standalone HTML from page document

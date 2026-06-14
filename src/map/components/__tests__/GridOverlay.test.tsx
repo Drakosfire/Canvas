@@ -6,7 +6,7 @@
  */
 
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { GridOverlay } from '../GridOverlay';
 import { DEFAULT_GRID_CONFIG, GridConfig } from '../../types/map.types';
 
@@ -32,7 +32,14 @@ jest.mock('react-konva', () => ({
       data-draggable={draggable}
       data-x={x}
       data-y={y}
-      {...(onDragEnd && { onDragEnd })}
+      onDragEnd={() => {
+        onDragEnd?.({
+          target: {
+            x: () => 25,
+            y: () => 30,
+          },
+        });
+      }}
     >
       {children}
     </div>
@@ -40,10 +47,16 @@ jest.mock('react-konva', () => ({
 }));
 
 describe('GridOverlay', () => {
+  const visibleGridConfig: GridConfig = {
+    ...DEFAULT_GRID_CONFIG,
+    visible: true,
+    cellSizePx: 50,
+  };
+
   const defaultProps = {
     width: 800,
     height: 600,
-    gridConfig: DEFAULT_GRID_CONFIG,
+    gridConfig: visibleGridConfig,
   };
 
   describe('base rendering', () => {
@@ -289,17 +302,7 @@ describe('GridOverlay', () => {
       expect(group).toBeInTheDocument();
       expect(group).toHaveAttribute('data-draggable', 'true');
 
-      // Simulate drag end event
-      const dragEvent = {
-        target: {
-          x: () => 25,
-          y: () => 30,
-        },
-      };
-      const onDragEnd = (group as any).props.onDragEnd;
-      if (onDragEnd) {
-        onDragEnd(dragEvent);
-      }
+      fireEvent.dragEnd(group);
 
       expect(onOffsetChange).toHaveBeenCalledWith({ offsetX: 25, offsetY: 30 });
     });

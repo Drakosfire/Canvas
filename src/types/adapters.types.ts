@@ -158,26 +158,24 @@ export const createDefaultDataResolver = (): DataResolver => ({
         dataSources: ComponentDataSource[],
         dataRef: ComponentDataReference
     ): T | undefined {
-        if (dataRef.type === 'statblock') {
-            const source = dataSources.find((s) => s.type === 'statblock');
-            if (source && typeof source.payload === 'object' && source.payload !== null) {
-                const payload = source.payload as Record<string, unknown>;
-                return payload[dataRef.path] as T | undefined;
-            }
-        } else if (dataRef.type === 'character') {
-            const source = dataSources.find((s) => s.type === 'character');
-            if (source && typeof source.payload === 'object' && source.payload !== null) {
-                const payload = source.payload as Record<string, unknown>;
-                // Support nested paths like 'dnd5eData.abilityScores'
-                return resolvePath(payload, dataRef.path) as T | undefined;
-            }
-        } else if (dataRef.type === 'custom') {
-            const source = dataSources.find((s) => s.type === 'custom');
-            if (source && typeof source.payload === 'object' && source.payload !== null) {
-                const payload = source.payload as Record<string, unknown>;
-                return payload[dataRef.key] as T | undefined;
-            }
+        const source = dataRef.sourceId
+            ? dataSources.find((s) => s.id === dataRef.sourceId)
+            : dataSources.find((s) => s.type === dataRef.type);
+
+        if (!source || typeof source.payload !== 'object' || source.payload === null) {
+            return undefined;
         }
+
+        const payload = source.payload as Record<string, unknown>;
+
+        if (dataRef.type === 'custom' && dataRef.key) {
+            return payload[dataRef.key] as T | undefined;
+        }
+
+        if (dataRef.path) {
+            return resolvePath(payload, dataRef.path) as T | undefined;
+        }
+
         return undefined;
     },
 

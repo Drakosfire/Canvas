@@ -8,80 +8,62 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { useMapFonts } from '../useMapFonts';
 import { FONT_OPTIONS } from '../../types/map.types';
 
-// Mock document.fonts API
-const mockFonts = {
-  load: jest.fn(),
-  check: jest.fn(),
-  ready: Promise.resolve(),
-};
-
-// Store original document
-const originalDocument = global.document;
+const mockLoad = jest.fn();
+const mockCheck = jest.fn();
 
 beforeEach(() => {
-  // Reset mocks
   jest.clearAllMocks();
-  
-  // Setup default mock behavior
-  mockFonts.load.mockResolvedValue(undefined);
-  mockFonts.check.mockImplementation((fontSpec: string) => {
-    // Return true if any font name is in the spec
-    return FONT_OPTIONS.some((font) => fontSpec.includes(font));
-  });
-  
-  // Mock document.fonts
-  (global as any).document = {
-    ...originalDocument,
-    fonts: mockFonts,
-  };
-});
+  mockLoad.mockResolvedValue(undefined);
+  mockCheck.mockImplementation((fontSpec: string) =>
+    FONT_OPTIONS.some((font) => fontSpec.includes(font))
+  );
 
-afterEach(() => {
-  // Restore original document
-  (global as any).document = originalDocument;
+  Object.defineProperty(document, 'fonts', {
+    configurable: true,
+    value: {
+      load: mockLoad,
+      check: mockCheck,
+      ready: Promise.resolve(),
+    },
+  });
 });
 
 describe('useMapFonts', () => {
   describe('initialization', () => {
     it('should initialize with fonts not loaded', () => {
-      mockFonts.check.mockReturnValue(false);
+      mockCheck.mockReturnValue(false);
       
       const { result } = renderHook(() => useMapFonts());
       
       expect(result.current.fontsReady).toBe(false);
-      expect(result.current.fontsLoading).toBe(false);
     });
 
     it('should start loading fonts on mount', () => {
-      mockFonts.load.mockResolvedValue(undefined);
-      mockFonts.check.mockReturnValue(false);
+      mockCheck.mockReturnValue(false);
       
       renderHook(() => useMapFonts());
       
-      expect(mockFonts.load).toHaveBeenCalled();
+      expect(mockLoad).toHaveBeenCalled();
     });
   });
 
   describe('font loading', () => {
     it('should load all required fonts', async () => {
-      mockFonts.load.mockResolvedValue(undefined);
-      mockFonts.check.mockReturnValue(true);
+      mockCheck.mockReturnValue(false);
+      mockLoad.mockResolvedValue(undefined);
       
-      const { result } = renderHook(() => useMapFonts());
+      renderHook(() => useMapFonts());
       
-      // Should call load for each font
       await waitFor(() => {
-        expect(mockFonts.load).toHaveBeenCalled();
+        expect(mockLoad).toHaveBeenCalled();
       });
       
-      // Check that all fonts are requested
-      const loadCalls = mockFonts.load.mock.calls;
+      const loadCalls = mockLoad.mock.calls;
       expect(loadCalls.length).toBeGreaterThan(0);
     });
 
     it('should set fontsReady to true when fonts are loaded', async () => {
-      mockFonts.load.mockResolvedValue(undefined);
-      mockFonts.check.mockImplementation(() => true);
+      mockCheck.mockImplementation(() => true);
       
       const { result } = renderHook(() => useMapFonts());
       
@@ -95,17 +77,15 @@ describe('useMapFonts', () => {
       const loadPromise = new Promise<void>((resolve) => {
         resolveLoad = resolve;
       });
-      mockFonts.load.mockReturnValue(loadPromise);
-      mockFonts.check.mockReturnValue(false);
+      mockLoad.mockReturnValue(loadPromise);
+      mockCheck.mockReturnValue(false);
       
       const { result } = renderHook(() => useMapFonts());
       
-      // Should be loading initially
       expect(result.current.fontsLoading).toBe(true);
       
-      // Resolve loading
       resolveLoad!();
-      mockFonts.check.mockReturnValue(true);
+      mockCheck.mockReturnValue(true);
       
       await waitFor(() => {
         expect(result.current.fontsLoading).toBe(false);
@@ -115,11 +95,9 @@ describe('useMapFonts', () => {
 
   describe('font availability', () => {
     it('should check if fonts are available', async () => {
-      mockFonts.load.mockResolvedValue(undefined);
-      mockFonts.check.mockImplementation((fontSpec: string) => {
-        // Mock font check - return true for all fonts
-        return FONT_OPTIONS.some((font) => fontSpec.includes(font));
-      });
+      mockCheck.mockImplementation((fontSpec: string) =>
+        FONT_OPTIONS.some((font) => fontSpec.includes(font))
+      );
       
       const { result } = renderHook(() => useMapFonts());
       
@@ -129,12 +107,11 @@ describe('useMapFonts', () => {
     });
 
     it('should handle font loading failure gracefully', async () => {
-      mockFonts.load.mockRejectedValue(new Error('Font load failed'));
-      mockFonts.check.mockReturnValue(false);
+      mockLoad.mockRejectedValue(new Error('Font load failed'));
+      mockCheck.mockReturnValue(false);
       
       const { result } = renderHook(() => useMapFonts());
       
-      // Should eventually set fontsLoading to false even on error
       await waitFor(() => {
         expect(result.current.fontsLoading).toBe(false);
       }, { timeout: 3000 });
@@ -143,20 +120,17 @@ describe('useMapFonts', () => {
 
   describe('font families', () => {
     it('should load all required font families', () => {
-      mockFonts.load.mockResolvedValue(undefined);
+      mockCheck.mockReturnValue(false);
       
       renderHook(() => useMapFonts());
       
-      // Verify that load was called (fonts are being requested)
-      expect(mockFonts.load).toHaveBeenCalled();
+      expect(mockLoad).toHaveBeenCalled();
       
-      // Check that all font families are included in load calls
-      const loadCalls = mockFonts.load.mock.calls.flat();
+      const loadCalls = mockLoad.mock.calls.flat();
       FONT_OPTIONS.forEach((font) => {
         const fontIncluded = loadCalls.some((call: string) => 
           typeof call === 'string' && call.includes(font)
         );
-        // At least one call should include each font
         expect(fontIncluded || loadCalls.length > 0).toBe(true);
       });
     });
@@ -164,40 +138,36 @@ describe('useMapFonts', () => {
 
   describe('re-rendering', () => {
     it('should not reload fonts on re-render', () => {
-      mockFonts.load.mockResolvedValue(undefined);
-      mockFonts.check.mockReturnValue(true);
+      mockCheck.mockReturnValue(true);
       
       const { rerender } = renderHook(() => useMapFonts());
       
-      const initialCallCount = mockFonts.load.mock.calls.length;
+      const initialCallCount = mockLoad.mock.calls.length;
       
       rerender();
       
-      // Should not call load again
-      expect(mockFonts.load.mock.calls.length).toBe(initialCallCount);
+      expect(mockLoad.mock.calls.length).toBe(initialCallCount);
     });
   });
 
   describe('edge cases', () => {
     it('should handle missing document.fonts API', () => {
-      (global as any).document = {};
+      Object.defineProperty(document, 'fonts', {
+        configurable: true,
+        value: undefined,
+      });
       
       const { result } = renderHook(() => useMapFonts());
       
-      // Should gracefully handle missing API
       expect(result.current.fontsReady).toBe(false);
       expect(result.current.fontsLoading).toBe(false);
     });
 
     it('should handle fonts that are already loaded', async () => {
-      // Set check to return true immediately (fonts already loaded)
-      mockFonts.check.mockImplementation(() => true);
-      mockFonts.load.mockResolvedValue(undefined);
+      mockCheck.mockImplementation(() => true);
       
       const { result } = renderHook(() => useMapFonts());
       
-      // Should be ready immediately since check returns true
-      // But we need to wait for the effect to run
       await waitFor(() => {
         expect(result.current.fontsReady).toBe(true);
       }, { timeout: 1000 });

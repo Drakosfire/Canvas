@@ -263,7 +263,7 @@
 ## Files Created/Updated
 
 ### Updated
-- ✅ `Docs/ProjectDiary/2025/StatblockGenerator/Tutorial/2025-11-02-canvas-library-abstraction-HANDOFF.md`
+- ✅ `Canvas/ARCHITECTURE.md`
   - Status: Planning → LOCKED
   - Added: Architecture decisions (11)
   - Added: Adapter Pattern section

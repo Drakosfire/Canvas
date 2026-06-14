@@ -99,7 +99,7 @@ describe('layoutReducer', () => {
         jest.clearAllMocks();
     });
 
-    it('records measurements and marks layout dirty', () => {
+    it('records measurements and defers pagination until all required keys are present', () => {
         const baseState = initializeWithRenderableData();
         const nextState = layoutReducer(baseState, {
             type: 'MEASUREMENTS_UPDATED',
@@ -110,9 +110,9 @@ describe('layoutReducer', () => {
 
         expect(nextState.measurements.get('comp:block')?.height).toBe(120);
         expect(nextState.measurementVersion).toBe(baseState.measurementVersion + 1);
-        expect(nextState.isLayoutDirty).toBe(true);
+        expect(nextState.isLayoutDirty).toBe(false);
         const buildCanvasEntries = utils.buildCanvasEntries as jest.Mock;
-        expect(buildCanvasEntries).toHaveBeenCalled();
+        expect(buildCanvasEntries).not.toHaveBeenCalled();
     });
 
     it('removes explicit deletions', () => {

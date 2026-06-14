@@ -18,8 +18,8 @@ module.exports = {
   ],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
-    // Mock uuid for testing
     '^uuid$': '<rootDir>/src/map/utils/__mocks__/uuid.ts',
+    '^react-konva$': '<rootDir>/src/map/__mocks__/react-konva.tsx',
   },
   setupFiles: ['jest-canvas-mock'],
   setupFilesAfterEnv: ['<rootDir>/src/setupTests.ts'],

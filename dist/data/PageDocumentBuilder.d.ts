@@ -5,12 +5,16 @@
  * Handles data hydration and template instantiation.
  */
 import type { PageDocument, TemplateConfig } from '../types/canvas.types';
-/**
- * TODO: Add a data source type for the character data and statblock
- */
 interface BuildPageDocumentOptions<T = unknown, C = unknown> {
     template: TemplateConfig;
+    /** @deprecated Prefer `primaryData` — kept for StatblockGenerator compatibility */
     statblockData?: T;
+    /** Primary document payload (creates a typed data source when set) */
+    primaryData?: T;
+    /** Data source type for primary payload (default: 'statblock' for backward compatibility) */
+    primaryDataSourceType?: string;
+    /** Data source id for primary payload (default: 'statblock-main' for backward compatibility) */
+    primaryDataSourceId?: string;
     characterData?: C;
     customData?: Record<string, unknown>;
     projectId?: string;
@@ -23,7 +27,7 @@ export declare function buildPageDocument<T = unknown, C = unknown>(options: Bui
 /**
  * Update data sources in an existing page document
  */
-export declare function updatePageDataSources<T = unknown, C = unknown>(page: PageDocument, statblockData?: T, characterData?: C, customData?: Record<string, unknown>): PageDocument;
+export declare function updatePageDataSources<T = unknown, C = unknown>(page: PageDocument, primaryOrStatblockData?: T, characterData?: C, customData?: Record<string, unknown>, primaryDataSourceType?: string): PageDocument;
 /**
  * Extract custom data object from selected assets
  */

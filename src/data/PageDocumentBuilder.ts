@@ -12,14 +12,17 @@ import type {
     ComponentInstance,
 } from '../types/canvas.types';
 
-/**
- * TODO: Add a data source type for the character data and statblock
- */
-
 interface BuildPageDocumentOptions<T = unknown, C = unknown> {
     template: TemplateConfig;
-    statblockData?: T; // Generic data type - applications provide their own type
-    characterData?: C; // Character data for PlayerCharacterGenerator
+    /** @deprecated Prefer `primaryData` — kept for StatblockGenerator compatibility */
+    statblockData?: T;
+    /** Primary document payload (creates a typed data source when set) */
+    primaryData?: T;
+    /** Data source type for primary payload (default: 'statblock' for backward compatibility) */
+    primaryDataSourceType?: string;
+    /** Data source id for primary payload (default: 'statblock-main' for backward compatibility) */
+    primaryDataSourceId?: string;
+    characterData?: C;
     customData?: Record<string, unknown>;
     projectId?: string;
     ownerId?: string;
@@ -32,11 +35,16 @@ export function buildPageDocument<T = unknown, C = unknown>(options: BuildPageDo
     const {
         template,
         statblockData,
+        primaryData,
+        primaryDataSourceType = 'statblock',
+        primaryDataSourceId = 'statblock-main',
         characterData,
         customData = {},
         projectId = 'default-project',
         ownerId = 'default-user',
     } = options;
+
+    const resolvedPrimaryData = primaryData ?? statblockData;
 
     const now = new Date().toISOString();
 
@@ -44,11 +52,11 @@ export function buildPageDocument<T = unknown, C = unknown>(options: BuildPageDo
     const dataSources: ComponentDataSource[] = [];
 
     // Add statblock data source if provided
-    if (statblockData !== undefined) {
+    if (resolvedPrimaryData !== undefined) {
         dataSources.push({
-            id: 'statblock-main',
-            type: 'statblock',
-            payload: statblockData,
+            id: primaryDataSourceId,
+            type: primaryDataSourceType,
+            payload: resolvedPrimaryData,
             updatedAt: now,
         });
     }
@@ -105,7 +113,7 @@ export function buildPageDocument<T = unknown, C = unknown>(options: BuildPageDo
         updatedAt: now,
         history: [],
         metadata: {
-            generatedBy: 'DungeonMind StatBlock Generator',
+            generatedBy: 'DungeonMind Canvas',
             version: '1.0.0',
         },
     };
@@ -116,15 +124,16 @@ export function buildPageDocument<T = unknown, C = unknown>(options: BuildPageDo
  */
 export function updatePageDataSources<T = unknown, C = unknown>(
     page: PageDocument,
-    statblockData?: T,
+    primaryOrStatblockData?: T,
     characterData?: C,
-    customData?: Record<string, unknown>
+    customData?: Record<string, unknown>,
+    primaryDataSourceType: string = 'statblock'
 ): PageDocument {
     const updatedSources = page.dataSources.map((source) => {
-        if (source.type === 'statblock' && statblockData) {
+        if (source.type === primaryDataSourceType && primaryOrStatblockData !== undefined) {
             return {
                 ...source,
-                payload: statblockData,
+                payload: primaryOrStatblockData,
                 updatedAt: new Date().toISOString(),
             };
         }

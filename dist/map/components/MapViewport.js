@@ -31,7 +31,7 @@ import { MaskPreviewLayer } from './MaskPreviewLayer';
  * Shapes can be drawn into this buffer area, but it's clipped by the container.
  * Mask export clips to image dimensions regardless.
  */
-var STAGE_BUFFER = 500;
+export var STAGE_BUFFER = 500;
 /**
  * MapViewport renders a pannable, zoomable map canvas with:
  * - Base image layer

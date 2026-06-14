@@ -40,7 +40,7 @@ describe('MeasurementLayer cleanup', () => {
             expect(onMeasurements).toHaveBeenCalled();
             const calls = onMeasurements.mock.calls;
             const lastCall = calls[calls.length - 1][0];
-            const deletions = lastCall.filter((m: { height: number }) => m.height === 0);
+            const deletions = lastCall.filter((m: { height: number }) => m.height < 0);
             expect(deletions.length).toBeGreaterThan(0);
             expect(deletions.some((m: { key: string }) => m.key === 'test-key')).toBe(true);
         });
@@ -90,7 +90,7 @@ describe('MeasurementLayer cleanup', () => {
             expect(onMeasurements).toHaveBeenCalled();
             const calls = onMeasurements.mock.calls;
             const lastCall = calls[calls.length - 1][0];
-            const deletions = lastCall.filter((m: { height: number }) => m.height === 0);
+            const deletions = lastCall.filter((m: { height: number }) => m.height < 0);
             expect(deletions.length).toBeGreaterThanOrEqual(2);
         });
     });

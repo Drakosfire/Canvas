@@ -374,8 +374,11 @@ var MeasurementObserver = /** @class */ (function () {
             var isDebugComponent = componentId ? isComponentDebugEnabled(componentId) : false;
             // WIDTH GATE: Skip measurement if actual width doesn't match expected (CSS not applied yet)
             // The entry has inline style width set; check if rendered width matches
-            var expectedWidth = _this.node.style.width ? parseFloat(_this.node.style.width) : null;
-            if (expectedWidth != null && rect.width > 0) {
+            var styleWidth = _this.node.style.width;
+            var expectedWidth = styleWidth && styleWidth !== 'auto' && !styleWidth.includes('%')
+                ? parseFloat(styleWidth)
+                : null;
+            if (expectedWidth != null && !Number.isNaN(expectedWidth) && rect.width > 0) {
                 var widthDiff = Math.abs(rect.width - expectedWidth);
                 // Allow 5px tolerance for subpixel rendering
                 if (widthDiff > 5) {

@@ -3,11 +3,14 @@
  */
 // Add custom jest matchers from jest-dom
 import '@testing-library/jest-dom';
-// Mock ResizeObserver for tests
+// Mock ResizeObserver for tests — invoke callback on observe so measurements fire
 global.ResizeObserver = /** @class */ (function () {
-    function ResizeObserver() {
+    function ResizeObserver(callback) {
+        this.callback = callback;
     }
-    ResizeObserver.prototype.observe = function () { };
+    ResizeObserver.prototype.observe = function (element) {
+        this.callback([{ target: element }], this);
+    };
     ResizeObserver.prototype.unobserve = function () { };
     ResizeObserver.prototype.disconnect = function () { };
     return ResizeObserver;
@@ -18,6 +21,12 @@ if (typeof window !== 'undefined') {
         return setTimeout(function () { return callback({ didTimeout: false, timeRemaining: function () { return 5; } }); }, 1);
     });
     window.cancelIdleCallback = window.cancelIdleCallback || (function (id) {
+        clearTimeout(id);
+    });
+    window.requestAnimationFrame = window.requestAnimationFrame || (function (callback) {
+        return setTimeout(function () { return callback(performance.now()); }, 0);
+    });
+    window.cancelAnimationFrame = window.cancelAnimationFrame || (function (id) {
         clearTimeout(id);
     });
 }
