@@ -1,5 +1,10 @@
 # @dungeonmind/canvas
 
+For agent pickup, read [AGENTS.md](AGENTS.md). In the standalone repository,
+[CI](.github/workflows/ci.yml) uses `npm ci` and runs type checking, lint, tests,
+and the package build. When changing a public contract, also verify the affected
+consumer in its owning repository.
+
 A React library for measurement-driven document layouts and Konva-based map canvases.
 
 ## Installation
